@@ -34,6 +34,8 @@ class WF_igk
     ModuleBase::Vector3<double> get_1qvec_cartesian(const int ik,const int ig)const;
 
     std::complex<double>* get_sk(const int ik, const int it, const int ia, ModulePW::PW_Basis_K* wfc_basis)const;
+    std::complex<double>* get_sk_minus(const int ik, const int it, const int ia, ModulePW::PW_Basis_K* wfc_basis, const ModuleBase::Vector3<double> thr)const;
+    std::complex<double>* get_sk_plus (const int ik, const int it, const int ia, ModulePW::PW_Basis_K* wfc_basis, const ModuleBase::Vector3<double> thr)const;
 
 	// pengfei 2016-11-23
     std::complex<double>* get_skq(int ik, int it, int ia, ModuleBase::Vector3<double> q);

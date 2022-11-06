@@ -92,10 +92,32 @@ void Velocity::act
     const int nkb3 = 3 * nkb;
     ModuleBase::ComplexMatrix becp1(n_npwx, nkb, false);
     ModuleBase::ComplexMatrix becp2(n_npwx, nkb3, false);
+    ModuleBase::ComplexMatrix becp1_minus(n_npwx, nkb, false);
+    ModuleBase::ComplexMatrix becp1_plus(n_npwx, nkb, false);
     char transC = 'C';
     char transN = 'N';
     char transT = 'T';
     const int npm = n_npwx;
+    //-----------------------------------------------------
+    const double thr = 1e-4;
+    const int id0 = 1;
+    ModuleBase::GlobalFunc::ZEROS(vpsi, 3 * n_npwx * max_npw);
+    //-----------------------------------------------------
+    // for (int ib = 0;ib < nkb;ib++)
+	// {
+    //     cout<<"ih: "<<ib<<endl; 
+    //     std::complex<double> pref = pow( ModuleBase::NEG_IMAG_UNIT, this->ppcell->nhtol(0, ib));
+    //     double max = 0;
+	// 	for (int ig = 0;ig < npw;ig++)
+	// 	{
+	// 		std::complex<double> cal = (this->ppcell->vkb_plus(ib,ig) - this->ppcell->vkb_minus(ib,ig)) / (2*thr * wfcpw->tpiba) ;
+	// 		std::complex<double> ref = this->ppcell->gradvkb(id0, ib, ig);
+    //         if(max < abs(cal-ref)) max = abs(cal - ref);
+    //         if(abs(cal - ref) > 1e-8)
+	// 		std::cout<<ib<<setprecision(15)<<","<<ig<<" "<<cal<<"  "<<ref<<endl;
+	// 	}
+    //     cout<<"max: "<<max<<endl;
+    // }
     if (n_npwx == 1)
     {
         int inc = 1;
@@ -114,12 +136,22 @@ void Velocity::act
         zgemm_(&transC, &transN, &nkb3, &n_npwx, &npw,
                &ModuleBase::ONE, this->ppcell->gradvkb.ptr, &max_npw, psi0, &max_npw,
                &ModuleBase::ZERO, becp2.c, &nkb3);
+        zgemm_(&transC, &transN, &nkb, &n_npwx, &npw,
+               &ModuleBase::ONE, this->ppcell->vkb_minus.c, &max_npw, psi0, &max_npw,
+               &ModuleBase::ZERO, becp1_minus.c, &nkb);
+        zgemm_(&transC, &transN, &nkb, &n_npwx, &npw,
+               &ModuleBase::ONE, this->ppcell->vkb_plus.c, &max_npw, psi0, &max_npw,
+               &ModuleBase::ZERO, becp1_plus.c, &nkb);
     }
     Parallel_Reduce::reduce_complex_double_pool(becp1.c, nkb * n_npwx);
     Parallel_Reduce::reduce_complex_double_pool(becp2.c, nkb3 * n_npwx);
+    Parallel_Reduce::reduce_complex_double_pool(becp1_minus.c, nkb * n_npwx);
+    Parallel_Reduce::reduce_complex_double_pool(becp1_plus.c, nkb * n_npwx);
 
     //2. <\beta \psi><psi|
     ModuleBase::ComplexMatrix ps1(nkb, n_npwx, true);
+    ModuleBase::ComplexMatrix ps1_minus(nkb, n_npwx, true);
+    ModuleBase::ComplexMatrix ps1_plus(nkb, n_npwx, true);
     ModuleBase::ComplexMatrix ps2(nkb3, n_npwx, true);
 
     int sum = 0;
@@ -142,6 +174,8 @@ void Velocity::act
                             int sumip2 = sum + ip2;
                             int sumip = sum + ip;
                             ps1(sumip2, ib)  += dij * becp1(ib, sumip);
+                            ps1_minus(sumip2, ib)  += dij * becp1_minus(ib, sumip);
+                            ps1_plus(sumip2, ib)  += dij * becp1_plus(ib, sumip);
                             ps2(sumip2, ib)  += dij * becp2(ib, sumip);
                             ps2(sumip2 + nkb, ib)  += dij * becp2(ib, sumip + nkb);
                             ps2(sumip2 + 2*nkb, ib)  += dij * becp2(ib , sumip + 2*nkb);
@@ -198,7 +232,8 @@ void Velocity::act
         }
     }
 
-    
+    std::complex<double> *vpsi2 = new std::complex<double> [max_npw * n_npwx];
+    ModuleBase::GlobalFunc::ZEROS(vpsi2, n_npwx * max_npw);
     if (n_npwx == 1)
     {
         int inc = 1;
@@ -228,6 +263,30 @@ void Velocity::act
             zgemm_(&transN, &transT, &npw, &npm, &nkb,
                &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, ps2.c + ps2shift, &n_npwx,
                &ModuleBase::ONE, vpsi + npwshift, &max_npw);
+        }
+        zgemm_(&transN, &transT, &npw, &npm, &nkb,
+               &ModuleBase::NEG_ONE, this->ppcell->vkb.c, &max_npw, ps1_minus.c, &n_npwx,
+               &ModuleBase::ONE, vpsi2, &max_npw);
+        zgemm_(&transN, &transT, &npw, &npm, &nkb,
+               &ModuleBase::NEG_ONE, this->ppcell->vkb_minus.c, &max_npw, ps1.c, &n_npwx,
+               &ModuleBase::ONE, vpsi2, &max_npw);
+        zgemm_(&transN, &transT, &npw, &npm, &nkb,
+               &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, ps1_plus.c, &n_npwx,
+               &ModuleBase::ONE, vpsi2, &max_npw);
+        zgemm_(&transN, &transT, &npw, &npm, &nkb,
+               &ModuleBase::ONE, this->ppcell->vkb_plus.c, &max_npw, ps1.c, &n_npwx,
+               &ModuleBase::ONE, vpsi2, &max_npw);
+    }
+    for(int ib = 0 ; ib < n_npwx ; ++ib)
+    {
+        const int i0 = ib * max_npw;
+        for(int i = 0 ; i < npw ; ++i)
+        {
+            vpsi2[ i0 + i ] /= (2 * thr * wfcpw->tpiba); 
+            if(abs(vpsi2[i + ib * max_npw]- vpsi[i + ib * max_npw + id0 * max_npw * n_npwx] ) > 1e-6)
+                ModuleBase::WARNING_QUIT("velocity_pw.cpp","Wrong");
+            // cout<<vpsi2[i + ib * max_npw] <<" "<<vpsi[i + ib * max_npw + id0 * max_npw * n_npwx] 
+            //     <<" "<< vpsi[i + ib * max_npw + id0 * max_npw * n_npwx] / vpsi2[i + ib * max_npw]<<endl;
         }
     }
 

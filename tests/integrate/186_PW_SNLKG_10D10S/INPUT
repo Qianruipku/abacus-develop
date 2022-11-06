@@ -13,7 +13,7 @@ seed_sto        20000
 pseudo_dir	../../PP_ORB
 symmetry	    1
 kpar            2
-bndpar          2
+bndpar          1
 out_chg         0
 init_chg        file
 read_file_dir 		./

@@ -78,6 +78,58 @@ std::complex<double> *WF_igk::get_sk(const int ik, const int it, const int ia, M
 	return sk;
 }
 
+std::complex<double> *WF_igk::get_sk_minus(const int ik, const int it, const int ia, ModulePW::PW_Basis_K* wfc_basis, const ModuleBase::Vector3<double> thr) const
+{
+	ModuleBase::timer::tick("WF_igk", "get_sk");
+	const double arg = ((GlobalC::kv.kvec_c[ik] - thr)* GlobalC::ucell.atoms[it].tau[ia]) * ModuleBase::TWO_PI;
+	const std::complex<double> kphase = std::complex<double>(cos(arg), -sin(arg));
+	std::complex<double> *sk = new std::complex<double>[GlobalC::kv.ngk[ik]];
+	const int nx = wfc_basis->nx, ny = wfc_basis->ny, nz = wfc_basis->nz;
+	for(int igl = 0; igl < GlobalC::kv.ngk[ik]; ++igl)
+	{
+		const int isz = wfc_basis->getigl2isz(ik,igl);
+    	int iz = isz % nz;
+    	const int is = isz / nz;
+		const int ixy = wfc_basis->is2fftixy[is];
+    	int ix = ixy / wfc_basis->fftny;
+    	int iy = ixy % wfc_basis->fftny;
+		if (ix < int(nx/2) + 1) ix += nx;
+        if (iy < int(ny/2) + 1) iy += ny;
+        if (iz < int(nz/2) + 1) iz += nz;
+		const int iat = GlobalC::ucell.itia2iat(it, ia);
+		sk[igl] = kphase * GlobalC::sf.eigts1(iat, ix) * GlobalC::sf.eigts2(iat, iy)
+				 * GlobalC::sf.eigts3(iat, iz);
+	}
+	ModuleBase::timer::tick("WF_igk", "get_sk");
+	return sk;
+}
+
+std::complex<double> *WF_igk::get_sk_plus(const int ik, const int it, const int ia, ModulePW::PW_Basis_K* wfc_basis, const ModuleBase::Vector3<double> thr) const
+{
+	ModuleBase::timer::tick("WF_igk", "get_sk");
+	const double arg = ((GlobalC::kv.kvec_c[ik] + thr) * GlobalC::ucell.atoms[it].tau[ia]) * ModuleBase::TWO_PI;
+	const std::complex<double> kphase = std::complex<double>(cos(arg), -sin(arg));
+	std::complex<double> *sk = new std::complex<double>[GlobalC::kv.ngk[ik]];
+	const int nx = wfc_basis->nx, ny = wfc_basis->ny, nz = wfc_basis->nz;
+	for(int igl = 0; igl < GlobalC::kv.ngk[ik]; ++igl)
+	{
+		const int isz = wfc_basis->getigl2isz(ik,igl);
+    	int iz = isz % nz;
+    	const int is = isz / nz;
+		const int ixy = wfc_basis->is2fftixy[is];
+    	int ix = ixy / wfc_basis->fftny;
+    	int iy = ixy % wfc_basis->fftny;
+		if (ix < int(nx/2) + 1) ix += nx;
+        if (iy < int(ny/2) + 1) iy += ny;
+        if (iz < int(nz/2) + 1) iz += nz;
+		const int iat = GlobalC::ucell.itia2iat(it, ia);
+		sk[igl] = kphase * GlobalC::sf.eigts1(iat, ix) * GlobalC::sf.eigts2(iat, iy)
+				 * GlobalC::sf.eigts3(iat, iz);
+	}
+	ModuleBase::timer::tick("WF_igk", "get_sk");
+	return sk;
+}
+
 std::complex<double> *WF_igk::get_skq(int ik,
 									  const int it,
 									  const int ia,

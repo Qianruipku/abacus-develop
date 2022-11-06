@@ -98,6 +98,8 @@ void pseudopot_cell_vnl::init(const int ntype, const bool allocate_vkb)
 	if (nkb > 0 && allocate_vkb )
 	{
 		vkb.create(nkb, GlobalC::wf.npwx);
+		vkb_minus.create(nkb, GlobalC::wf.npwx);
+		vkb_plus.create(nkb, GlobalC::wf.npwx);
 	}
 
 	//this->nqx = 10000;		// calculted in allocate_nlpot.f90
@@ -160,17 +162,40 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 	// When the internal memory is large enough, it is better to make vkb1 be the number of pseudopot_cell_vnl.
     // We only need to initialize it once as long as the cell is unchanged.
 	ModuleBase::matrix vkb1(nhm, npw);
+	ModuleBase::matrix vkb1_minus(nhm, npw);
+	ModuleBase::matrix vkb1_plus(nhm, npw);
+	ModuleBase::matrix gradvkb(nhm, npw);
 	double *vq = new double[npw];
+		double *dvq = new double[npw]; //qianrui
+	double *vq_minus = new double[npw];
+	double *vq_plus = new double[npw];
 	const int x1= (lmaxkb + 1)*(lmaxkb + 1);
 
 	ModuleBase::matrix ylm(x1, npw);
+	ModuleBase::matrix ylm_minus(x1, npw);
+	ModuleBase::matrix ylm_plus(x1, npw);
+		ModuleBase::matrix *dylm = new ModuleBase::matrix[3]{ModuleBase::matrix(x1,npw),ModuleBase::matrix(x1,npw),ModuleBase::matrix(x1,npw)}; //qianrui
+		ModuleBase::matrix *dylm_test = new ModuleBase::matrix[3]{ModuleBase::matrix(x1,npw),ModuleBase::matrix(x1,npw),ModuleBase::matrix(x1,npw)}; //qianrui
 	ModuleBase::Vector3<double> *gk = new ModuleBase::Vector3<double>[npw];
+	ModuleBase::Vector3<double> *gk_minus = new ModuleBase::Vector3<double>[npw];
+	ModuleBase::Vector3<double> *gk_plus = new ModuleBase::Vector3<double>[npw];
+	//------------------------------------------------------------------------------------------
+	const double thr  = 1e-4;
+	int id0 = 1;
+	//------------------------------------------------------------------------------------------
+ 	ModuleBase::Vector3<double> smallv(0,0,0); 
+	smallv[id0] += thr;
 	for (int ig = 0;ig < npw;ig++) 
 	{
 		gk[ig] = GlobalC::wf.get_1qvec_cartesian(ik, ig);
+		gk_minus[ig] = gk[ig] - smallv;
+		gk_plus[ig] = gk[ig] + smallv;
 	}
 
-	ModuleBase::YlmReal::Ylm_Real(x1, npw, gk, ylm);
+	// ModuleBase::YlmReal::Ylm_Real(x1, npw, gk_minus, ylm_minus); Ylm_Real is bad to treat small differences and grad_Ylm_Real should be used. 
+	ModuleBase::YlmReal::grad_Ylm_Real(x1, npw, gk, ylm, dylm[0], dylm[1], dylm[2]);
+	ModuleBase::YlmReal::grad_Ylm_Real(x1, npw, gk_minus, ylm_minus, dylm_test[0], dylm_test[1], dylm_test[2]);
+	ModuleBase::YlmReal::grad_Ylm_Real(x1, npw, gk_plus, ylm_plus, dylm_test[0], dylm_test[1], dylm_test[2]);
 
 	int jkb = 0;
 	for(int it = 0;it < GlobalC::ucell.ntype;it++)
@@ -187,9 +212,18 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 			for (int ig = 0;ig < npw;ig++)
 			{
 				const double gnorm = gk[ig].norm() * GlobalC::ucell.tpiba;
+				const double gnorm_minus = gk_minus[ig].norm() * GlobalC::ucell.tpiba;
+				const double gnorm_plus = gk_plus[ig].norm() * GlobalC::ucell.tpiba;
+				
 
 				vq [ig] = ModuleBase::PolyInt::Polynomial_Interpolation(
 						this->tab, it, nb, GlobalV::NQX, GlobalV::DQ, gnorm );
+				dvq[ig] =ModuleBase::PolyInt::Polynomial_Interpolation(
+			    			this->tab_dq, it, nb, GlobalV::NQX, GlobalV::DQ, gnorm );
+				vq_minus [ig] = ModuleBase::PolyInt::Polynomial_Interpolation(
+						this->tab, it, nb, GlobalV::NQX, GlobalV::DQ, gnorm_minus );
+				vq_plus [ig] = ModuleBase::PolyInt::Polynomial_Interpolation(
+						this->tab, it, nb, GlobalV::NQX, GlobalV::DQ, gnorm_plus );
 			}
 
 			// add spherical harmonic part
@@ -201,6 +235,15 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 					for (int ig = 0;ig < npw;ig++)
 					{
 						vkb1(ih, ig) = ylm(lm, ig) * vq [ig];
+						vkb1_minus(ih, ig) = ylm_minus(lm, ig) * vq_minus [ig];
+						vkb1_plus(ih, ig) = ylm_plus(lm, ig) * vq_plus [ig];
+							//qianrui
+							ModuleBase::Vector3<double> gg = gk[ig];
+                    		double ggnorm = gg.norm();
+							if(ggnorm < 1e-8)
+								gradvkb(ih, ig) = 0.0;
+							else
+			    				gradvkb(ih, ig) = ylm(lm, ig) * dvq [ig] * gg[id0] / ggnorm + dylm[id0](lm, ig) / GlobalC::wfcpw->tpiba * vq [ig] ;
 					}
 				}
 			} // end ih
@@ -211,23 +254,48 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 		for (int ia=0; ia<GlobalC::ucell.atoms[it].na; ia++) 
 		{
 			std::complex<double> *sk = GlobalC::wf.get_sk(ik, it, ia,GlobalC::wfcpw);
+			std::complex<double> *sk_minus = GlobalC::wf.get_sk_minus(ik, it, ia,GlobalC::wfcpw, smallv);
+			std::complex<double> *sk_plus = GlobalC::wf.get_sk_plus(ik, it, ia,GlobalC::wfcpw, smallv);
 			for (int ih = 0;ih < nh;ih++)
 			{
 				std::complex<double> pref = pow( ModuleBase::NEG_IMAG_UNIT, nhtol(it, ih));	//?
 				std::complex<double>* pvkb = &vkb_in(jkb, 0);
+				std::complex<double>* pvkb_minus = &vkb_minus(jkb, 0);
+				std::complex<double>* pvkb_plus = &vkb_plus(jkb, 0);
 				for (int ig = 0;ig < npw;ig++)
 				{
 					pvkb[ig] = vkb1(ih, ig) * sk [ig] * pref;
+					pvkb_minus[ig] = vkb1_minus(ih, ig) * sk_minus [ig] * pref;
+					pvkb_plus[ig]  = vkb1_plus(ih, ig) * sk_plus [ig] * pref;
+					if(GlobalC::wfcpw->getgk2(ik,ig) < 1e-5) 
+					{
+						pvkb_minus[ig] = vkb1(ih, ig) * sk_minus [ig] * pref;
+						pvkb_plus[ig] = vkb1(ih, ig) * sk_plus [ig] * pref;
+					}
+					// std::complex<double> cal = (pvkb_plus[ig] - pvkb_minus[ig]) / (2*thr * GlobalC::wfcpw->tpiba) ;
+					// std::complex<double> ref = vkb1(ih, ig) * (sk_plus[ig] - sk_minus[ig]) / (2*thr * GlobalC::wfcpw->tpiba) * pref 
+					//                            + gradvkb(ih, ig) * sk [ig] * pref;
+					// if(abs(cal - ref) > 1e-8)
+					// std::cout<<ih<<","<<ig<<" "<<cal<<"  "<<ref<<endl;
 				}
 				++jkb;
 			} // end ih
 			delete [] sk;
+			delete [] sk_minus;
+			delete [] sk_plus;
 		} // end ia
+
 	} // enddo
 
 	delete [] gk;
+	delete [] gk_minus;
+	delete [] gk_plus;
 	delete [] vq;
-	ModuleBase::timer::tick("pp_cell_vnl","getvnl");
+	delete [] vq_minus;
+	delete [] vq_plus;
+	delete [] dylm;
+	delete [] dvq;
+ 	ModuleBase::timer::tick("pp_cell_vnl","getvnl");
 
 	return;
 } // end subroutine getvnl
@@ -401,6 +469,7 @@ void pseudopot_cell_vnl::init_vnl(UnitCell_pseudo &cell)
 		delete[] aux;
 		delete[] jl;
 	}
+	initgradq_vnl(cell);//qianrui
 	ModuleBase::timer::tick("ppcell_vnl","init_vnl");
 	GlobalV::ofs_running << "\n Init Non-Local-Pseudopotential done." << std::endl;
 	return;
