@@ -95,8 +95,12 @@ public:
 
 
 	mutable ModuleBase::ComplexMatrix vkb;	// all beta functions in reciprocal space
-	mutable ModuleBase::ComplexMatrix vkb_minus;	// all beta functions in reciprocal space
-	mutable ModuleBase::ComplexMatrix vkb_plus;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_minus1;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_plus1;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_minus2;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_plus2;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_minus3;	// all beta functions in reciprocal space
+	mutable ModuleBase::ComplexMatrix vkb_plus3;	// all beta functions in reciprocal space
 	mutable ModuleBase::ComplexArray gradvkb; // gradient of beta functions
 	std::complex<double> ***vkb1_alpha;
 	std::complex<double> ***vkb_alpha;
