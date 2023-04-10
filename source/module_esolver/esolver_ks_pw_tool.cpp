@@ -23,7 +23,7 @@ namespace ModuleESolver
 //------------------------------------------------------------------
 #define TWOSQRT2LN2 2.354820045030949 // FWHM = 2sqrt(2ln2) * \sigma
 #define FACTOR      1.839939223835727e7
-void ESolver_KS_PW::KG(const int nche_KG, const double fwhmin, const double wcut, const double dw_in, const int times)
+void ESolver_KS_PW::KG(const int nche_KG, const double fwhmin, const double wcut, const double dw_in, const double dt)
 {
     //-----------------------------------------------------------
     //               KS conductivity
@@ -34,7 +34,6 @@ void ESolver_KS_PW::KG(const int nche_KG, const double fwhmin, const double wcut
     int nw = ceil(wcut / dw_in);
     double dw = dw_in / ModuleBase::Ry_to_eV; // converge unit in eV to Ry
     double sigma = fwhmin / TWOSQRT2LN2 / ModuleBase::Ry_to_eV;
-    double dt = ModuleBase::PI / (dw * nw) / times; // unit in a.u., 1 a.u. = 4.837771834548454e-17 s
     int nt = ceil(sqrt(20) / sigma / dt);
     cout << "nw: " << nw << " ; dw: " << dw * ModuleBase::Ry_to_eV << " eV" << endl;
     cout << "nt: " << nt << " ; dt: " << dt << " a.u.(ry^-1)" << endl;

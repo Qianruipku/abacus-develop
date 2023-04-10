@@ -1,5 +1,6 @@
 #include "velocity_pw.h"
 #include "module_base/timer.h"
+#include "src_pw/global.h"
 #include "src_parallel/parallel_reduce.h"
 namespace hamilt
 {
@@ -32,6 +33,7 @@ void Velocity::init(const int ik_in)
     // Calculate nonlocal pseudopotential vkb
 	if(this->ppcell->nkb > 0 && this->nonlocal) 
 	{
+        this->ppcell->getvnl(ik, GlobalC::ppcell.vkb);
         this->ppcell->getgradq_vnl(ik_in);
 	}
 
@@ -103,7 +105,7 @@ void Velocity::act
     char transT = 'T';
     const int npm = n_npwx;
     //-----------------------------------------------------
-    const double thr = 1e-4;
+    const double thr = GlobalV::DIFFTHR;
     // ModuleBase::GlobalFunc::ZEROS(vpsi, 3 * n_npwx * max_npw);
     //-----------------------------------------------------
 

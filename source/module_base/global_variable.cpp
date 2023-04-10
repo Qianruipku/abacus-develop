@@ -18,6 +18,7 @@ namespace GlobalV
 // In practice calculation, these values are set in
 // input.cpp.
 //----------------------------------------------------------
+double DIFFTHR = 1e-6;
 int NBANDS = 0;
 int NBANDS_ISTATE = 0; // default number.
 int NLOCAL = 0; // total number of local basis.

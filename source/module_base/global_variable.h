@@ -17,7 +17,7 @@ namespace GlobalV
 //==========================================================
 // EXPLAIN : Basic Global Variables
 //==========================================================
-
+extern double DIFFTHR;
 extern int NBANDS;
 extern int NBANDS_ISTATE; // 1.05 // mohan add 2011-03-22
 extern int NLOCAL; // 1.1 // mohan add 2009-05-29

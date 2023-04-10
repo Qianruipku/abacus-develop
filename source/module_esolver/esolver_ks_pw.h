@@ -25,7 +25,7 @@ namespace ModuleESolver
         void postprocess() override;
         //calculate conductivities with Kubo-Greenwood formula
         void KG(const int nche_KG, const double fwhmin, const double wcut, 
-             const double dw_in, const int times);
+             const double dw_in, const double);
 
     protected:
         virtual void beforescf(const int istep) override;

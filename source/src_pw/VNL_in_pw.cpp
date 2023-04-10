@@ -200,7 +200,7 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 	ModuleBase::Vector3<double> *gk_minus3 = new ModuleBase::Vector3<double>[npw];
 	ModuleBase::Vector3<double> *gk_plus3 = new ModuleBase::Vector3<double>[npw];
 	//------------------------------------------------------------------------------------------
-	const double thr  = 1e-4;
+	const double thr = GlobalV::DIFFTHR;;
 	//------------------------------------------------------------------------------------------
  	ModuleBase::Vector3<double> smallv1(thr,0,0), smallv2(0,thr,0), smallv3(0,0,thr); 
 	for (int ig = 0;ig < npw;ig++) 
