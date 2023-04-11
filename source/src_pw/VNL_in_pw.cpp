@@ -321,15 +321,15 @@ void pseudopot_cell_vnl::getvnl(const int &ik, ModuleBase::ComplexMatrix& vkb_in
 					pvkb_plus2[ig]  = vkb1_plus2(ih, ig) * sk_plus2 [ig] * pref;
 					pvkb_minus3[ig] = vkb1_minus3(ih, ig) * sk_minus3 [ig] * pref;
 					pvkb_plus3[ig]  = vkb1_plus3(ih, ig) * sk_plus3 [ig] * pref;
-					if(GlobalC::wfcpw->getgk2(ik,ig) < 1e-5) 
-					{
-						pvkb_minus1[ig] = vkb1(ih, ig) * sk_minus1 [ig] * pref;
-						pvkb_plus1[ig] = vkb1(ih, ig) * sk_plus1 [ig] * pref;
-						pvkb_minus2[ig] = vkb1(ih, ig) * sk_minus2 [ig] * pref;
-						pvkb_plus2[ig] = vkb1(ih, ig) * sk_plus2 [ig] * pref;
-						pvkb_minus3[ig] = vkb1(ih, ig) * sk_minus3 [ig] * pref;
-						pvkb_plus3[ig] = vkb1(ih, ig) * sk_plus3 [ig] * pref;
-					}
+					// if(GlobalC::wfcpw->getgk2(ik,ig) < 1e-5) 
+					// {
+					// 	pvkb_minus1[ig] = vkb1(ih, ig) * sk_minus1 [ig] * pref;
+					// 	pvkb_plus1[ig] = vkb1(ih, ig) * sk_plus1 [ig] * pref;
+					// 	pvkb_minus2[ig] = vkb1(ih, ig) * sk_minus2 [ig] * pref;
+					// 	pvkb_plus2[ig] = vkb1(ih, ig) * sk_plus2 [ig] * pref;
+					// 	pvkb_minus3[ig] = vkb1(ih, ig) * sk_minus3 [ig] * pref;
+					// 	pvkb_plus3[ig] = vkb1(ih, ig) * sk_plus3 [ig] * pref;
+					// }
 					// std::complex<double> cal = (pvkb_plus[ig] - pvkb_minus[ig]) / (2*thr * GlobalC::wfcpw->tpiba) ;
 					// std::complex<double> ref = vkb1(ih, ig) * (sk_plus[ig] - sk_minus[ig]) / (2*thr * GlobalC::wfcpw->tpiba) * pref 
 					//                            + gradvkb(ih, ig) * sk [ig] * pref;
