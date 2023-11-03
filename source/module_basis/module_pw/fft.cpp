@@ -52,7 +52,6 @@ void FFT::clear()
     }
 #endif // defined(__CUDA) || defined(__ROCM)
 #if defined(__ENABLE_FLOAT_FFTW)
-    if (this->precision == "single") {
         this->cleanfFFT();
         if (c_auxg != nullptr) {
             fftw_free(c_auxg);
@@ -63,7 +62,6 @@ void FFT::clear()
             c_auxr = nullptr;
         }
         s_rspace = nullptr;
-    }
 #endif // defined(__ENABLE_FLOAT_FFTW)
 }
 
@@ -110,12 +108,10 @@ void FFT:: initfft(int nx_in, int ny_in, int nz_in, int lixy_in, int rixy_in, in
         }
 #endif // defined(__CUDA) || defined(__ROCM)
 #if defined(__ENABLE_FLOAT_FFTW)
-        if (this->precision == "single") {
             c_auxg  = (std::complex<float> *) fftw_malloc(sizeof(fftwf_complex) * maxgrids);
             c_auxr  = (std::complex<float> *) fftw_malloc(sizeof(fftwf_complex) * maxgrids);
 			ModuleBase::Memory::record("FFT::grid_s", 2 * sizeof(fftwf_complex) * maxgrids);
             s_rspace = (float *) c_auxg;
-        }
 #endif // defined(__ENABLE_FLOAT_FFTW)
 	}
 	else
@@ -131,9 +127,7 @@ void FFT:: setupFFT()
 	{
 		this->initplan();
 #if defined(__ENABLE_FLOAT_FFTW)
-        if (this->precision == "single") {
-            this->initplanf();
-        }
+        this->initplanf();
 #endif // defined(__ENABLE_FLOAT_FFTW)
 	}
 #if defined(__FFTW3_MPI) && defined(__MPI)

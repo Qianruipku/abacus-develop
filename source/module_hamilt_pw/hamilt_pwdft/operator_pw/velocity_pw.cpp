@@ -1,50 +1,120 @@
 #include "velocity_pw.h"
-#include "module_base/timer.h"
+
 #include "module_base/parallel_reduce.h"
+#include "module_base/timer.h"
 namespace hamilt
 {
 
-Velocity::Velocity
-(
-    const ModulePW::PW_Basis_K* wfcpw_in,
-    const int* isk_in,
-    pseudopot_cell_vnl* ppcell_in,
-    const UnitCell* ucell_in,
-    const bool nonlocal_in
-)
+Velocity::Velocity(const ModulePW::PW_Basis_K* wfcpw_in,
+                   const int* isk_in,
+                   pseudopot_cell_vnl* ppcell_in,
+                   const UnitCell* ucell_in,
+                   const bool nonlocal_in)
 {
     this->wfcpw = wfcpw_in;
     this->isk = isk_in;
     this->ppcell = ppcell_in;
     this->ucell = ucell_in;
     this->nonlocal = nonlocal_in;
-    if( this->wfcpw == nullptr || this->isk == nullptr || this->ppcell == nullptr || this->ucell == nullptr)
+    if (this->wfcpw == nullptr || this->isk == nullptr || this->ppcell == nullptr || this->ucell == nullptr)
     {
         ModuleBase::WARNING_QUIT("Velocity", "Constuctor of Operator::Velocity is failed, please check your code!");
     }
-    this->tpiba = ucell_in -> tpiba;
-    if(this->nonlocal)      this->ppcell->initgradq_vnl(*this->ucell);
+    this->tpiba = ucell_in->tpiba;
+    if (this->nonlocal)
+        this->ppcell->initgradq_vnl(*this->ucell);
 }
 
-void Velocity::init(const int ik_in)
+void Velocity::init(const int ik_in, bool init_float)
 {
+    const int npw = this->wfcpw->npwk[ik_in];
+    const int npwx = this->wfcpw->npwk_max;
+    const int nkb = this->ppcell->nkb;
+    const int nkb3 = 3 * nkb;
     this->ik = ik_in;
+    const int current_spin = this->isk[ik];
     // Calculate nonlocal pseudopotential vkb
-	if(this->ppcell->nkb > 0 && this->nonlocal) 
-	{
+    if (this->ppcell->nkb > 0 && this->nonlocal)
+    {
         this->ppcell->getgradq_vnl(ik_in);
-	}
+    }
 
+    if (init_float)
+    {
+        // init f_gx/y/z
+        delete[] f_gx;
+        f_gx = new float[npw];
+        delete[] f_gy;
+        f_gy = new float[npw];
+        delete[] f_gz;
+        f_gz = new float[npw];
+        for (int ig = 0; ig < npw; ++ig)
+        {
+            const ModuleBase::Vector3<double>& tmpg = wfcpw->getgpluskcar(this->ik, ig);
+            f_gx[ig] = static_cast<float>(tmpg.x * tpiba);
+            f_gy[ig] = static_cast<float>(tmpg.y * tpiba);
+            f_gz[ig] = static_cast<float>(tmpg.z * tpiba);
+        }
+
+        if (this->ppcell->nkb > 0 && this->nonlocal)
+        {
+            // init f_vkb
+            delete[] f_vkb;
+            f_vkb = new std::complex<float>[npw * nkb];
+            for (int ib = 0; ib < nkb; ++ib)
+            {
+                for (int ig = 0; ig < npw; ++ig)
+                {
+                    f_vkb[ig + ib * npw] = static_cast<std::complex<float>>(this->ppcell->vkb(ib, ig));
+                }
+            }
+
+            // init f_gradvkb
+            delete[] f_gradvkb;
+            f_gradvkb = new std::complex<float>[npw * nkb3];
+            std::cout<<this->ppcell->gradvkb.ptr<<" "<<f_gradvkb<<std::endl;
+            for (int ib = 0; ib < nkb3; ++ib)
+            {
+                for (int ig = 0; ig < npw; ++ig)
+                {
+                    f_gradvkb[ig + ib * npw] = static_cast<std::complex<float>>(this->ppcell->gradvkb.ptr[ib * npwx + ig]);
+                }
+            }
+
+            int dim_deeq = 0;
+            for (int it = 0; it < this->ucell->ntype; it++)
+            {
+                const int Nprojs = this->ucell->atoms[it].ncpp.nh;
+                dim_deeq += Nprojs * Nprojs * this->ucell->atoms[it].na;
+            }
+            delete[] f_deeq;
+            f_deeq = new float[dim_deeq];
+            int ipp = 0;
+            int iat = 0;
+            for (int it = 0; it < this->ucell->ntype; it++)
+            {
+                const int Nprojs = this->ucell->atoms[it].ncpp.nh;
+                const int Nprojs2 = Nprojs * Nprojs;
+                for (int ip = 0; ip < Nprojs; ip++)
+                {
+                    for (int ip2 = 0; ip2 < Nprojs; ip2++)
+                    {
+                        f_deeq[ipp + ip * Nprojs + ip2]
+                            = static_cast<float>(this->ppcell->deeq(current_spin, iat, ip, ip2));
+                    }
+                }
+                iat += this->ucell->atoms[it].na;
+                ipp += Nprojs2;
+            }
+        }
+    }   
 }
 
-void Velocity::act
-(
-    const psi::Psi<std::complex<double>> *psi_in, 
-    const int n_npwx, //nbands * NPOL
-    const std::complex<double>* psi0, 
-    std::complex<double>* vpsi,
-    const bool add
-) const
+void Velocity::act(const psi::Psi<std::complex<double>>* psi_in,
+                   const int n_npwx, // nbands * NPOL
+                   const std::complex<double>* psi0,
+                   std::complex<double>* vpsi,
+                   const bool add) const
 {
     ModuleBase::timer::tick("Operator", "Velocity");
     const int npw = psi_in->get_ngk(this->ik);
@@ -60,16 +130,16 @@ void Velocity::act
         for (int ig = 0; ig < npw; ++ig)
         {
             const ModuleBase::Vector3<double>& tmpg = wfcpw->getgpluskcar(this->ik, ig);
-            if(add)
+            if (add)
             {
-                tmhpsi[ig]                       += tmpsi_in[ig] * tmpg.x * tpiba;
-                tmhpsi[ig + n_npwx * max_npw]    += tmpsi_in[ig] * tmpg.y * tpiba;
-                tmhpsi[ig + 2 * n_npwx * max_npw]+= tmpsi_in[ig] * tmpg.z * tpiba;
+                tmhpsi[ig] += tmpsi_in[ig] * tmpg.x * tpiba;
+                tmhpsi[ig + n_npwx * max_npw] += tmpsi_in[ig] * tmpg.y * tpiba;
+                tmhpsi[ig + 2 * n_npwx * max_npw] += tmpsi_in[ig] * tmpg.z * tpiba;
             }
             else
             {
-                tmhpsi[ig]                        = tmpsi_in[ig] * tmpg.x * tpiba;
-                tmhpsi[ig + n_npwx * max_npw]     = tmpsi_in[ig] * tmpg.y * tpiba;
+                tmhpsi[ig] = tmpsi_in[ig] * tmpg.x * tpiba;
+                tmhpsi[ig + n_npwx * max_npw] = tmpsi_in[ig] * tmpg.y * tpiba;
                 tmhpsi[ig + 2 * n_npwx * max_npw] = tmpsi_in[ig] * tmpg.z * tpiba;
             }
         }
@@ -78,16 +148,16 @@ void Velocity::act
     }
 
     // ---------------------------------------------
-    // i[V_NL, r] = (\nabla_q+\nabla_q')V_{NL}(q,q') 
+    // i[V_NL, r] = (\nabla_q+\nabla_q')V_{NL}(q,q')
     // |\beta><\beta|\psi>
     // ---------------------------------------------
-    if (this->ppcell->nkb <= 0 || !this->nonlocal) 
+    if (this->ppcell->nkb <= 0 || !this->nonlocal)
     {
         ModuleBase::timer::tick("Operator", "Velocity");
         return;
     }
 
-    //1. <\beta|\psi>
+    // 1. <\beta|\psi>
     const int nkb = this->ppcell->nkb;
     const int nkb3 = 3 * nkb;
     ModuleBase::ComplexMatrix becp1(n_npwx, nkb, false);
@@ -99,26 +169,62 @@ void Velocity::act
     if (n_npwx == 1)
     {
         int inc = 1;
-        zgemv_(&transC, &npw, &nkb, 
-               &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, psi0, &inc, 
-               &ModuleBase::ZERO, becp1.c, &inc);
-        zgemv_(&transC, &npw, &nkb3, 
-               &ModuleBase::ONE, this->ppcell->gradvkb.ptr, &max_npw, psi0, &inc, 
-               &ModuleBase::ZERO, becp2.c, &inc);
+        zgemv_(&transC,
+               &npw,
+               &nkb,
+               &ModuleBase::ONE,
+               this->ppcell->vkb.c,
+               &max_npw,
+               psi0,
+               &inc,
+               &ModuleBase::ZERO,
+               becp1.c,
+               &inc);
+        zgemv_(&transC,
+               &npw,
+               &nkb3,
+               &ModuleBase::ONE,
+               this->ppcell->gradvkb.ptr,
+               &max_npw,
+               psi0,
+               &inc,
+               &ModuleBase::ZERO,
+               becp2.c,
+               &inc);
     }
     else
     {
-        zgemm_(&transC, &transN, &nkb, &n_npwx, &npw,
-               &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, psi0, &max_npw,
-               &ModuleBase::ZERO, becp1.c, &nkb);
-        zgemm_(&transC, &transN, &nkb3, &n_npwx, &npw,
-               &ModuleBase::ONE, this->ppcell->gradvkb.ptr, &max_npw, psi0, &max_npw,
-               &ModuleBase::ZERO, becp2.c, &nkb3);
+        zgemm_(&transC,
+               &transN,
+               &nkb,
+               &n_npwx,
+               &npw,
+               &ModuleBase::ONE,
+               this->ppcell->vkb.c,
+               &max_npw,
+               psi0,
+               &max_npw,
+               &ModuleBase::ZERO,
+               becp1.c,
+               &nkb);
+        zgemm_(&transC,
+               &transN,
+               &nkb3,
+               &n_npwx,
+               &npw,
+               &ModuleBase::ONE,
+               this->ppcell->gradvkb.ptr,
+               &max_npw,
+               psi0,
+               &max_npw,
+               &ModuleBase::ZERO,
+               becp2.c,
+               &nkb3);
     }
     Parallel_Reduce::reduce_pool(becp1.c, nkb * n_npwx);
     Parallel_Reduce::reduce_pool(becp2.c, nkb3 * n_npwx);
 
-    //2. <\beta \psi><psi|
+    // 2. <\beta \psi><psi|
     ModuleBase::ComplexMatrix ps1(nkb, n_npwx, true);
     ModuleBase::ComplexMatrix ps2(nkb3, n_npwx, true);
 
@@ -141,10 +247,10 @@ void Velocity::act
                             double dij = this->ppcell->deeq(current_spin, iat, ip, ip2);
                             int sumip2 = sum + ip2;
                             int sumip = sum + ip;
-                            ps1(sumip2, ib)  += dij * becp1(ib, sumip);
-                            ps2(sumip2, ib)  += dij * becp2(ib, sumip);
-                            ps2(sumip2 + nkb, ib)  += dij * becp2(ib, sumip + nkb);
-                            ps2(sumip2 + 2*nkb, ib)  += dij * becp2(ib , sumip + 2*nkb);
+                            ps1(sumip2, ib) += dij * becp1(ib, sumip);
+                            ps2(sumip2, ib) += dij * becp2(ib, sumip);
+                            ps2(sumip2 + nkb, ib) += dij * becp2(ib, sumip + nkb);
+                            ps2(sumip2 + 2 * nkb, ib) += dij * becp2(ib, sumip + 2 * nkb);
                         }
                     }
                 }
@@ -164,31 +270,31 @@ void Velocity::act
                 {
                     for (int ip2 = 0; ip2 < nproj; ip2++)
                     {
-                        for (int ib = 0; ib < n_npwx; ib+=2)
+                        for (int ib = 0; ib < n_npwx; ib += 2)
                         {
                             int sumip2 = sum + ip2;
                             int sumip = sum + ip;
                             std::complex<double> pol1becp1 = becp1(ib, sumip);
-                            std::complex<double> pol2becp1 = becp1(ib+1, sumip);
+                            std::complex<double> pol2becp1 = becp1(ib + 1, sumip);
                             std::complex<double> pol1becp2x = becp2(ib, sumip);
-                            std::complex<double> pol2becp2x = becp2(ib+1, sumip);
+                            std::complex<double> pol2becp2x = becp2(ib + 1, sumip);
                             std::complex<double> pol1becp2y = becp2(ib, sumip + nkb);
-                            std::complex<double> pol2becp2y = becp2(ib+1, sumip + nkb);
+                            std::complex<double> pol2becp2y = becp2(ib + 1, sumip + nkb);
                             std::complex<double> pol1becp2z = becp2(ib, sumip + 2 * nkb);
-                            std::complex<double> pol2becp2z = becp2(ib+1, sumip + 2 * nkb);
+                            std::complex<double> pol2becp2z = becp2(ib + 1, sumip + 2 * nkb);
                             std::complex<double> dij0 = this->ppcell->deeq_nc(0, iat, ip2, ip);
                             std::complex<double> dij1 = this->ppcell->deeq_nc(1, iat, ip2, ip);
                             std::complex<double> dij2 = this->ppcell->deeq_nc(2, iat, ip2, ip);
                             std::complex<double> dij3 = this->ppcell->deeq_nc(3, iat, ip2, ip);
 
-                            ps1(sumip2, ib)             += dij0 * pol1becp1  + dij1 * pol2becp1;
-                            ps1(sumip2, ib+1)           += dij2 * pol1becp1  + dij3 * pol2becp1;
-                            ps2(sumip2, ib)             += dij0 * pol1becp2x + dij1 * pol2becp2x;
-                            ps2(sumip2, ib+1)           += dij2 * pol1becp2x + dij3 * pol2becp2x;
-                            ps2(sumip2 + nkb, ib)       += dij0 * pol1becp2y + dij1 * pol2becp2y;
-                            ps2(sumip2 + nkb, ib+1)     += dij2 * pol1becp2y + dij3 * pol2becp2y;
-                            ps2(sumip2 + 2*nkb, ib)     += dij0 * pol1becp2z + dij1 * pol2becp2z;
-                            ps2(sumip2 + 2*nkb, ib+1)   += dij2 * pol1becp2z + dij3 * pol2becp2z;
+                            ps1(sumip2, ib) += dij0 * pol1becp1 + dij1 * pol2becp1;
+                            ps1(sumip2, ib + 1) += dij2 * pol1becp1 + dij3 * pol2becp1;
+                            ps2(sumip2, ib) += dij0 * pol1becp2x + dij1 * pol2becp2x;
+                            ps2(sumip2, ib + 1) += dij2 * pol1becp2x + dij3 * pol2becp2x;
+                            ps2(sumip2 + nkb, ib) += dij0 * pol1becp2y + dij1 * pol2becp2y;
+                            ps2(sumip2 + nkb, ib + 1) += dij2 * pol1becp2y + dij3 * pol2becp2y;
+                            ps2(sumip2 + 2 * nkb, ib) += dij0 * pol1becp2z + dij1 * pol2becp2z;
+                            ps2(sumip2 + 2 * nkb, ib + 1) += dij2 * pol1becp2z + dij3 * pol2becp2z;
                         }
                     }
                 }
@@ -198,43 +304,247 @@ void Velocity::act
         }
     }
 
-    
     if (n_npwx == 1)
     {
         int inc = 1;
-        for(int id = 0 ; id < 3 ; ++id)
+        for (int id = 0; id < 3; ++id)
         {
             int vkbshift = id * max_npw * nkb;
             int ps2shift = id * nkb;
-            int npwshift = id * max_npw ;
-            zgemv_(&transN, &npw, &nkb,
-                   &ModuleBase::ONE, this->ppcell->gradvkb.ptr + vkbshift, &max_npw, ps1.c, &inc,
-                   &ModuleBase::ONE, vpsi + npwshift, &inc);
-            zgemv_(&transN, &npw, &nkb,
-                   &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, ps2.c + ps2shift, &inc,
-                   &ModuleBase::ONE, vpsi + npwshift, &inc);
+            int npwshift = id * max_npw;
+            zgemv_(&transN,
+                   &npw,
+                   &nkb,
+                   &ModuleBase::ONE,
+                   this->ppcell->gradvkb.ptr + vkbshift,
+                   &max_npw,
+                   ps1.c,
+                   &inc,
+                   &ModuleBase::ONE,
+                   vpsi + npwshift,
+                   &inc);
+            zgemv_(&transN,
+                   &npw,
+                   &nkb,
+                   &ModuleBase::ONE,
+                   this->ppcell->vkb.c,
+                   &max_npw,
+                   ps2.c + ps2shift,
+                   &inc,
+                   &ModuleBase::ONE,
+                   vpsi + npwshift,
+                   &inc);
         }
     }
     else
     {
-        for(int id = 0 ; id < 3 ; ++id)
+        for (int id = 0; id < 3; ++id)
         {
             int vkbshift = id * max_npw * nkb;
             int ps2shift = id * n_npwx * nkb;
             int npwshift = id * max_npw * n_npwx;
-            zgemm_(&transN, &transT, &npw, &npm, &nkb,
-               &ModuleBase::ONE, this->ppcell->gradvkb.ptr + vkbshift, &max_npw, ps1.c, &n_npwx,
-               &ModuleBase::ONE, vpsi + npwshift, &max_npw);
-            zgemm_(&transN, &transT, &npw, &npm, &nkb,
-               &ModuleBase::ONE, this->ppcell->vkb.c, &max_npw, ps2.c + ps2shift, &n_npwx,
-               &ModuleBase::ONE, vpsi + npwshift, &max_npw);
+            zgemm_(&transN,
+                   &transT,
+                   &npw,
+                   &npm,
+                   &nkb,
+                   &ModuleBase::ONE,
+                   this->ppcell->gradvkb.ptr + vkbshift,
+                   &max_npw,
+                   ps1.c,
+                   &n_npwx,
+                   &ModuleBase::ONE,
+                   vpsi + npwshift,
+                   &max_npw);
+            zgemm_(&transN,
+                   &transT,
+                   &npw,
+                   &npm,
+                   &nkb,
+                   &ModuleBase::ONE,
+                   this->ppcell->vkb.c,
+                   &max_npw,
+                   ps2.c + ps2shift,
+                   &n_npwx,
+                   &ModuleBase::ONE,
+                   vpsi + npwshift,
+                   &max_npw);
         }
     }
-
 
     ModuleBase::timer::tick("Operator", "Velocity");
     return;
 }
 
+void Velocity::act(const psi::Psi<std::complex<float>>* psi_in,
+                   const int n_npwx, // nbands * NPOL
+                   const std::complex<float>* psi0,
+                   std::complex<float>* vpsi,
+                   const bool add) const
+{
+    ModuleBase::timer::tick("Operator", "Velocity");
+    const int npw = psi_in->get_ngk(this->ik);
+    const int max_npw = psi_in->get_nbasis() / psi_in->npol;
+    const int npol = psi_in->npol;
+    const std::complex<float>* tmpsi_in = psi0;
+    std::complex<float>* tmhpsi = vpsi;
+    // -------------
+    //       p
+    // -------------
+    for (int ib = 0; ib < n_npwx; ++ib)
+    {
+        for (int ig = 0; ig < npw; ++ig)
+        {
+            if (add)
+            {
+                tmhpsi[ig] += tmpsi_in[ig] * f_gx[ig];
+                tmhpsi[ig + n_npwx * max_npw] += tmpsi_in[ig] * f_gy[ig];
+                tmhpsi[ig + 2 * n_npwx * max_npw] += tmpsi_in[ig] * f_gz[ig];
+            }
+            else
+            {
+                tmhpsi[ig] = tmpsi_in[ig] * f_gx[ig];
+                tmhpsi[ig + n_npwx * max_npw] = tmpsi_in[ig] * f_gy[ig];
+                tmhpsi[ig + 2 * n_npwx * max_npw] = tmpsi_in[ig] * f_gz[ig];
+            }
+        }
+        tmhpsi += max_npw;
+        tmpsi_in += max_npw;
+    }
 
+    // ---------------------------------------------
+    // i[V_NL, r] = (\nabla_q+\nabla_q')V_{NL}(q,q')
+    // |\beta><\beta|\psi>
+    // ---------------------------------------------
+    if (this->ppcell->nkb <= 0 || !this->nonlocal)
+    {
+        ModuleBase::timer::tick("Operator", "Velocity");
+        return;
+    }
+
+    // 1. <\beta|\psi>
+    const int nkb = this->ppcell->nkb;
+    const int nkb3 = 3 * nkb;
+    std::vector<std::complex<float>> becp1(n_npwx * nkb);
+    std::vector<std::complex<float>> becp2(n_npwx * nkb3);
+    char transC = 'C';
+    char transN = 'N';
+    char transT = 'T';
+    std::complex<float> one = 1.0f;
+    std::complex<float> zero = 0.0f;
+    const int npm = n_npwx;
+    if (n_npwx == 1)
+    {
+        int inc = 1;
+        cgemv_(&transC, &npw, &nkb, &one, f_vkb, &npw, psi0, &inc, &zero, becp1.data(), &inc);
+        cgemv_(&transC, &npw, &nkb3, &one, f_gradvkb, &npw, psi0, &inc, &zero, becp2.data(), &inc);
+    }
+    else
+    {
+        cgemm_(&transC, &transN, &nkb, &n_npwx, &npw, &one, f_vkb, &npw, psi0, &max_npw, &zero, becp1.data(), &nkb);
+        cgemm_(&transC,
+               &transN,
+               &nkb3,
+               &n_npwx,
+               &npw,
+               &one,
+               f_gradvkb,
+               &npw,
+               psi0,
+               &max_npw,
+               &zero,
+               becp2.data(),
+               &nkb3);
+    }
+    Parallel_Reduce::reduce_pool(becp1.data(), nkb * n_npwx);
+    Parallel_Reduce::reduce_pool(becp2.data(), nkb3 * n_npwx);
+
+    // 2. <\beta \psi><psi|
+    std::vector<std::complex<float>> ps1(nkb * n_npwx, 0.0f);
+    std::vector<std::complex<float>> ps2(nkb3 * n_npwx, 0.0f);
+
+    int sum = 0;
+    int ipp = 0;
+    if (npol == 1)
+    {
+        for (int it = 0; it < this->ucell->ntype; it++)
+        {
+            const int Nprojs = this->ucell->atoms[it].ncpp.nh;
+            const int Nprojs2 = Nprojs * Nprojs;
+            for (int ia = 0; ia < this->ucell->atoms[it].na; ia++)
+            {
+                for (int ip = 0; ip < Nprojs; ip++)
+                {
+                    for (int ip2 = 0; ip2 < Nprojs; ip2++)
+                    {
+                        for (int ib = 0; ib < n_npwx; ++ib)
+                        {
+                            float dij = this->f_deeq[ipp + ip * Nprojs + ip2];
+                            int sumip2 = sum + ip2;
+                            int sumip = sum + ip;
+                            ps1[sumip2 * n_npwx + ib] += dij * becp1[ib * nkb + sumip];
+                            ps2[sumip2 * n_npwx + ib] += dij * becp2[ib * nkb3 + sumip];
+                            ps2[(sumip2 + nkb) * n_npwx + ib] += dij * becp2[ib * nkb3 + sumip + nkb];
+                            ps2[(sumip2 + 2 * nkb) * n_npwx + ib] += dij * becp2[ib * nkb3 + sumip + 2 * nkb];
+                        }
+                    }
+                }
+                sum += Nprojs;
+            }
+            ipp += Nprojs2;
+        }
+    }
+
+    if (n_npwx == 1)
+    {
+        int inc = 1;
+        for (int id = 0; id < 3; ++id)
+        {
+            int vkbshift = id * npw * nkb;
+            int ps2shift = id * nkb;
+            int npwshift = id * max_npw;
+            cgemv_(&transN, &npw, &nkb, &one, f_gradvkb + vkbshift, &npw, ps1.data(), &inc, &one, vpsi + npwshift, &inc);
+            cgemv_(&transN, &npw, &nkb, &one, f_vkb, &npw, ps2.data() + ps2shift, &inc, &one, vpsi + npwshift, &inc);
+        }
+    }
+    else
+    {
+        for (int id = 0; id < 3; ++id)
+        {
+            int vkbshift = id * npw * nkb;
+            int ps2shift = id * n_npwx * nkb;
+            int npwshift = id * max_npw * n_npwx;
+            cgemm_(&transN,
+                   &transT,
+                   &npw,
+                   &npm,
+                   &nkb,
+                   &one,
+                   f_gradvkb + vkbshift,
+                   &npw,
+                   ps1.data(),
+                   &n_npwx,
+                   &one,
+                   vpsi + npwshift,
+                   &max_npw);
+            cgemm_(&transN,
+                   &transT,
+                   &npw,
+                   &npm,
+                   &nkb,
+                   &one,
+                   f_vkb,
+                   &npw,
+                   ps2.data() + ps2shift,
+                   &n_npwx,
+                   &one,
+                   vpsi + npwshift,
+                   &max_npw);
+        }
+    }
+
+    ModuleBase::timer::tick("Operator", "Velocity");
+    return;
 }
+
+} // namespace hamilt

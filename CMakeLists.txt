@@ -14,7 +14,7 @@ option(ENABLE_LCAO "Enable LCAO calculation." ON)
 option(ENABLE_DEEPKS "Enable DeePKS functionality" OFF)
 option(ENABLE_LIBXC "Enable LibXC functionality" OFF)
 option(USE_CUDA "Enable support to CUDA for PW." OFF)
-option(ENABLE_FLOAT_FFTW "Enable support to single precision FFTW library." OFF)
+option(ENABLE_FLOAT_FFTW "Enable support to single precision FFTW library." ON)
 # option(USE_CUSOLVER_LCAO "Enable support to CUSOLVER for LCAO." OFF) # broken
 option(USE_ROCM "Enable support to ROCm." OFF)
 option(USE_OPENMP "Enable OpenMP in ABACUS." ON)

@@ -53,7 +53,7 @@ ifeq ($(INTEL), ON)
     ##==========================
     ## MKL package
     ##==========================
-    HONG  += -D__FFTW3
+    HONG  += -D__FFTW3 -D__ENABLE_FLOAT_FFTW
     LIBS += -L${MKLROOT}/lib/intel64 -Wl,--start-group -lmkl_intel_lp64\
 	       -lmkl_intel_thread -lmkl_core -lmkl_scalapack_lp64 -lmkl_blacs_intelmpi_lp64 -Wl,--end-group -Wl,-rpath=${MKLROOT}/lib/intel64
     INCLUDES += -I${MKLROOT}/include/fftw
