@@ -714,8 +714,11 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         info_gatherv sto_npwx(perbands_sto, GlobalV::NSTOGROUP, npwx, PARAPW_WORLD);
 #endif
         const int bandsinfo[6]{perbands_ks, perbands_sto, perbands, allbands_ks, allbands_sto, allbands};
-        double* en = nullptr;
-        const double* en_all = &(this->pelec->ekb(ik, GlobalV::NBANDS - allbands_ks));
+        double *en = nullptr, *en_all = nullptr;
+        if (allbands_ks > 0)
+        {
+            en_all = &(this->pelec->ekb(ik, GlobalV::NBANDS - allbands_ks));
+        }
         if (perbands_ks > 0)
         {
             en = new double[perbands_ks];

@@ -42,7 +42,14 @@ void ESolver_SDFT_PW::Init(Input& inp, UnitCell& ucell)
     this->method_sto = inp.method_sto;
     ESolver_KS::Init(inp, ucell);
 
-    this->pelec = new elecstate::ElecStatePW_SDFT(pw_wfc, &(chr), (K_Vectors*)(&(kv)), this->pw_rho, pw_big);
+    this->pelec = new elecstate::ElecStatePW_SDFT(pw_wfc,
+                                                  &(chr),
+                                                  (K_Vectors*)(&(kv)),
+                                                  &GlobalC::ucell,
+                                                  &(GlobalC::ppcell),
+                                                  this->pw_rhod,
+                                                  this->pw_rho,
+                                                  pw_big);
 
     // Inititlize the charge density.
     this->pelec->charge->allocate(GlobalV::NSPIN);
@@ -51,7 +58,8 @@ void ESolver_SDFT_PW::Init(Input& inp, UnitCell& ucell)
     // Initializee the potential.
     if (this->pelec->pot == nullptr)
     {
-        this->pelec->pot = new elecstate::Potential(pw_rho,
+        this->pelec->pot = new elecstate::Potential(pw_rhod,
+                                                    pw_rho,
                                                     &GlobalC::ucell,
                                                     &(GlobalC::ppcell.vloc),
                                                     &(sf),
@@ -70,8 +78,17 @@ void ESolver_SDFT_PW::Init(Input& inp, UnitCell& ucell)
     this->Init_GlobalC(inp, ucell); // temporary
 
     stowf.init(&kv, pw_wfc->npwk_max);
-    if (INPUT.nbands_sto != 0)
-        Init_Sto_Orbitals(this->stowf, inp.seed_sto);
+    if (inp.nbands_sto != 0)
+    {
+        if (inp.initsto_ecut < inp.ecutwfc)
+        {
+            Init_Sto_Orbitals(this->stowf, inp.seed_sto);
+        }
+        else
+        {
+            Init_Sto_Orbitals_Ecut(this->stowf, inp.seed_sto, kv, *pw_wfc, inp.initsto_ecut);
+        }
+    }
     else
         Init_Com_Orbitals(this->stowf);
     size_t size = stowf.chi0->size();
