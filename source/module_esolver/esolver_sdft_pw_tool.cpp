@@ -878,10 +878,16 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                 double timeTaken = duration.count();
                 std::cout << "(Time left " << timeTaken * (double(nt - 1) / print_step * (nk - ik) - 1) << " s) "
                           << std::endl;
-                std::cout << "nt: ";
+                std::cout << "nt: "<<std::endl;
             }
             if ((it - 1) % print_step == 0 && it > 1)
-                std::cout << it - 1 << " ";
+            {
+                std::cout <<std::setw(8)<< it - 1;
+                if( (it - 1)% (print_step*10) == 0)
+                {
+                    std::cout << std::endl;
+                }
+            }
 
             // time evolution exp(-iHt)|\psi_ks>
             // KS
