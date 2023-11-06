@@ -6,6 +6,10 @@
 #include "driver.h"
 #include "module_base/parallel_global.h"
 #include "module_io/parse_args.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+#include "fftw3.h"
 
 int main(int argc, char** argv)
 {
@@ -21,6 +25,10 @@ int main(int argc, char** argv)
     initialize the mpi environment.
     */
     Parallel_Global::read_mpi_parameters(argc, argv);
+#ifdef _OPENMP
+	fftw_init_threads();
+	fftw_plan_with_nthreads(omp_get_max_threads());
+#endif
 
     /*
     main program for doing electronic structure calculations.
@@ -33,6 +41,9 @@ int main(int argc, char** argv)
     */
 #ifdef __MPI
     Parallel_Global::finalize_mpi();
+#endif
+#ifdef _OPENMP
+	fftw_cleanup_threads();
 #endif
 
     return 0;
