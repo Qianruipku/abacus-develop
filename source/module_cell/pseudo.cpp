@@ -30,7 +30,8 @@ void pseudo::set_pseudo(const Pseudopot_upf& upf)
 	this->set_pseudo_atom(upf);
 	this->set_pseudo_vl(upf);
 
-
+	if (nbeta == 0)
+		return;
 	delete[] lll;
 	lll = new int[nbeta];
 	assert(lll != 0);
@@ -291,6 +292,9 @@ void pseudo::set_pseudo_vl(const Pseudopot_upf &upf)
 	delete[] vloc_at;
 	vloc_at = new double[mesh];
 	assert(vloc_at != 0);
+
+	if (upf.coulomb_potential)
+        return;
 
 	for (int i = 0;i < mesh;i++)
 	{
