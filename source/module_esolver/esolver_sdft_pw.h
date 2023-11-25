@@ -85,30 +85,14 @@ class ESolver_SDFT_PW : public ESolver_KS_PW<std::complex<double>>
      * @brief calculate Jmatrix  <leftv|J|rightv>
      *
      */
-    void cal_jmatrix(const psi::Psi<std::complex<float>>& kspsi_all,
-                     const psi::Psi<std::complex<float>>& vkspsi,
-                     const double* en,
-                     const double* en_all,
-                     std::complex<double>* leftfact,
-                     std::complex<double>* rightfact,
-                     const psi::Psi<std::complex<double>>& leftchi,
-                     psi::Psi<std::complex<double>>& rightchi,
-                     psi::Psi<std::complex<double>>& left_hchi,
-                     psi::Psi<std::complex<double>>& batch_vchi,
-                     psi::Psi<std::complex<double>>& batch_vhchi,
-#ifdef __MPI
-                     psi::Psi<std::complex<float>>& chi_all,
-                     psi::Psi<std::complex<float>>& hchi_all,
-                     void* gatherinfo_ks,
-                     void* gatherinfo_sto,
-#endif
-                     const int& bsize_psi,
-                     std::vector<std::complex<float>>& j1,
-                     std::vector<std::complex<float>>& j2,
-                     hamilt::Velocity& velop,
-                     const int& ik,
-                     const std::complex<double>& factor,
-                     const int bandinfo[6]);
+    void calj12(const int& ik,
+      const int& perbands,
+                psi::Psi<std::complex<double>>& chi,
+                psi::Psi<std::complex<double>>& j1chi,
+                psi::Psi<std::complex<double>>& j2chi,
+                psi::Psi<std::complex<double>>& tmpvchi,
+                psi::Psi<std::complex<double>>& tmphchi,
+                hamilt::Velocity& velop);
 };
 
 } // namespace ModuleESolver

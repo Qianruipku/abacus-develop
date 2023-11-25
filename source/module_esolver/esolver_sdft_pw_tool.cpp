@@ -38,72 +38,6 @@ struct parallel_distribution
     int num_per;
 };
 
-#ifdef __MPI
-struct info_gatherv
-{
-    info_gatherv(const int& ngroup_per, const int& np, const int& num_in_group, MPI_Comm comm_world)
-    {
-        nrecv = new int[np];
-        displs = new int[np];
-        MPI_Allgather(&ngroup_per, 1, MPI_INT, nrecv, 1, MPI_INT, comm_world);
-        displs[0] = 0;
-        for (int i = 1; i < np; ++i)
-        {
-            displs[i] = displs[i - 1] + nrecv[i - 1];
-        }
-        for (int i = 0; i < np; ++i)
-        {
-            nrecv[i] *= num_in_group;
-            displs[i] *= num_in_group;
-        }
-    }
-    ~info_gatherv()
-    {
-        delete[] nrecv;
-        delete[] displs;
-    }
-    int* nrecv = nullptr;
-    int* displs = nullptr;
-};
-#endif
-void convert_psi(const psi::Psi<std::complex<double>>& psi_in, psi::Psi<std::complex<float>>& psi_out)
-{
-    psi_in.fix_k(0);
-    psi_out.fix_k(0);
-    for (int i = 0; i < psi_in.size(); ++i)
-    {
-        psi_out.get_pointer()[i] = static_cast<std::complex<float>>(psi_in.get_pointer()[i]);
-    }
-    return;
-}
-
-psi::Psi<std::complex<float>>* gatherchi(psi::Psi<std::complex<float>>& chi,
-                                         psi::Psi<std::complex<float>>& chi_all,
-                                         const int& npwx,
-                                         int* nrecv_sto,
-                                         int* displs_sto,
-                                         const int perbands_sto)
-{
-    psi::Psi<std::complex<float>>* p_chi;
-    p_chi = &chi;
-#ifdef __MPI
-    if (GlobalV::NSTOGROUP > 1)
-    {
-        p_chi = &chi_all;
-        ModuleBase::timer::tick("sKG", "bands_gather");
-        MPI_Allgatherv(chi.get_pointer(),
-                       perbands_sto * npwx,
-                       MPI_COMPLEX,
-                       chi_all.get_pointer(),
-                       nrecv_sto,
-                       displs_sto,
-                       MPI_COMPLEX,
-                       PARAPW_WORLD);
-        ModuleBase::timer::tick("sKG", "bands_gather");
-    }
-#endif
-    return p_chi;
-}
 
 void ESolver_SDFT_PW::check_che(const int nche_in)
 {
@@ -200,19 +134,19 @@ void ESolver_SDFT_PW::check_che(const int nche_in)
 int ESolver_SDFT_PW::set_cond_nche(const double dt, const int nbatch, const double cond_thr)
 {
     int nche_guess = 1000;
-    ModuleBase::Chebyshev<double> chet(nche_guess);
+    ModuleBase::Chebyshev<double> chemt(nche_guess);
     Stochastic_Iter& stoiter = ((hsolver::HSolverPW_SDFT*)phsol)->stoiter;
     const double mu = this->pelec->eferm.ef;
     stoiter.stofunc.mu = mu;
-    stoiter.stofunc.t = 0.5 * dt * nbatch;
-    chet.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
+    stoiter.stofunc.t = dt * nbatch;
+    chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
 
     int nche;
     bool find = false;
     std::ofstream cheofs("Chebycoef");
     for (int i = 1; i < nche_guess; ++i)
     {
-        double error = std::abs(chet.coef_complex[i] / chet.coef_complex[0]);
+        double error = std::abs(chemt.coef_complex[i] / chemt.coef_complex[0]);
         cheofs << std::setw(5) << i << std::setw(20) << error << std::endl;
         if (!find && error < cond_thr)
         {
@@ -231,338 +165,34 @@ int ESolver_SDFT_PW::set_cond_nche(const double dt, const int nbatch, const doub
     return nche;
 }
 
-void ESolver_SDFT_PW::cal_jmatrix(const psi::Psi<std::complex<float>>& kspsi_all,
-                                  const psi::Psi<std::complex<float>>& vkspsi,
-                                  const double* en,
-                                  const double* en_all,
-                                  std::complex<double>* leftfact,
-                                  std::complex<double>* rightfact,
-                                  const psi::Psi<std::complex<double>>& leftchi,
-                                  psi::Psi<std::complex<double>>& rightchi,
-                                  psi::Psi<std::complex<double>>& left_hchi,
-                                  psi::Psi<std::complex<double>>& batch_vchi,
-                                  psi::Psi<std::complex<double>>& batch_vhchi,
-#ifdef __MPI
-                                  psi::Psi<std::complex<float>>& chi_all,
-                                  psi::Psi<std::complex<float>>& hchi_all,
-                                  void* gatherinfo_ks,
-                                  void* gatherinfo_sto,
-#endif
-                                  const int& bsize_psi,
-                                  std::vector<std::complex<float>>& j1,
-                                  std::vector<std::complex<float>>& j2,
-                                  hamilt::Velocity& velop,
-                                  const int& ik,
-                                  const std::complex<double>& factor,
-                                  const int bandinfo[6])
+void ESolver_SDFT_PW::calj12(const int& ik,
+                             const int& perbands,
+                             psi::Psi<std::complex<double>>& chi,
+                             psi::Psi<std::complex<double>>& j1chi,
+                             psi::Psi<std::complex<double>>& j2chi,
+                             psi::Psi<std::complex<double>>& tmpvchi,
+                             psi::Psi<std::complex<double>>& tmphchi,
+                             hamilt::Velocity& velop)
 {
-    ModuleBase::timer::tick(this->classname, "cal_jmatrix");
-    const char transa = 'C';
-    const char transb = 'N';
-    const std::complex<float> float_factor = static_cast<std::complex<float>>(factor);
-    const std::complex<float> conjfactor = std::conj(float_factor);
-    const float mu = static_cast<float>(this->pelec->eferm.ef);
-    const std::complex<float> zero = 0.0;
-    const int npwx = wf.npwx;
-    const int npw = kv.ngk[ik];
-    const int ndim = 3;
-    const int perbands_ks = bandinfo[0];
-    const int perbands_sto = bandinfo[1];
-    const int perbands = bandinfo[2];
-    const int allbands_ks = bandinfo[3];
-    const int allbands_sto = bandinfo[4];
-    const int allbands = bandinfo[5];
-    const int dim_jmatrix = perbands_ks * allbands_sto + perbands_sto * allbands;
+    const double mu = this->pelec->eferm.ef;
     Stochastic_Iter& stoiter = ((hsolver::HSolverPW_SDFT*)phsol)->stoiter;
+    const int npw = kv.ngk[ik];
 
-    psi::Psi<std::complex<double>> right_hchi(1, perbands_sto, npwx, kv.ngk.data());
-    psi::Psi<std::complex<float>> f_rightchi(1, perbands_sto, npwx, kv.ngk.data());
-    psi::Psi<std::complex<float>> f_right_hchi(1, perbands_sto, npwx, kv.ngk.data());
-
-    stoiter.stohchi.hchi(leftchi.get_pointer(), left_hchi.get_pointer(), perbands_sto);
-    stoiter.stohchi.hchi(rightchi.get_pointer(), right_hchi.get_pointer(), perbands_sto);
-    convert_psi(rightchi, f_rightchi);
-    convert_psi(right_hchi, f_right_hchi);
-    right_hchi.resize(1, 1, 1);
-
-    psi::Psi<std::complex<float>>* rightchi_all = &f_rightchi;
-    psi::Psi<std::complex<float>>* righthchi_all = &f_right_hchi;
-    std::complex<double>*tmprightf_all = nullptr, *rightf_all = rightfact;
-#ifdef __MPI
-    info_gatherv* ks_fact = static_cast<info_gatherv*>(gatherinfo_ks);
-    info_gatherv* sto_npwx = static_cast<info_gatherv*>(gatherinfo_sto);
-    rightchi_all = gatherchi(f_rightchi, chi_all, npwx, sto_npwx->nrecv, sto_npwx->displs, perbands_sto);
-    righthchi_all = gatherchi(f_right_hchi, hchi_all, npwx, sto_npwx->nrecv, sto_npwx->displs, perbands_sto);
-    if (GlobalV::NSTOGROUP > 1 && rightfact != nullptr)
+    psi::Psi<std::complex<double>> &hvchi = j2chi;
+    psi::Psi<std::complex<double>> &vchi = j1chi;
+    psi::Psi<std::complex<double>> &vhchi = tmpvchi;
+    psi::Psi<std::complex<double>> &hchi = tmphchi;
+    stoiter.stohchi.hchi(chi.get_pointer(), hchi.get_pointer(), perbands);
+    velop.act(&chi, perbands, hchi.get_pointer(), vhchi.get_pointer());
+    velop.act(&chi, perbands, chi.get_pointer(), vchi.get_pointer());
+    stoiter.stohchi.hchi(vchi.get_pointer(), hvchi.get_pointer(), perbands*3);
+    for(int ib = 0; ib < perbands*3; ++ib)
     {
-        tmprightf_all = new std::complex<double>[allbands_ks];
-        rightf_all = tmprightf_all;
-        MPI_Allgatherv(rightfact,
-                       perbands_ks,
-                       MPI_DOUBLE_COMPLEX,
-                       rightf_all,
-                       ks_fact->nrecv,
-                       ks_fact->displs,
-                       MPI_DOUBLE_COMPLEX,
-                       PARAPW_WORLD);
-    }
-#endif
-
-    psi::Psi<std::complex<float>> f_batch_vchi(1, bsize_psi * ndim, npwx, kv.ngk.data());
-    psi::Psi<std::complex<float>> f_batch_vhchi(1, bsize_psi * ndim, npwx, kv.ngk.data());
-    std::vector<std::complex<float>> tmpj(ndim * allbands_sto * perbands_sto);
-
-    // 1. (<\psi|J|\chi>)^T
-    // (allbands_sto, perbands_ks)
-    if (perbands_ks > 0)
-    {
-        for (int id = 0; id < ndim; ++id)
+        for(int ig = 0; ig < npw; ++ig)
         {
-            const int idnb = id * perbands_ks;
-            const int jbais = 0;
-            std::complex<float>* j1mat = &j1[id * dim_jmatrix];
-            std::complex<float>* j2mat = &j2[id * dim_jmatrix];
-            //(<\psi|v|\chi>)^T
-            cgemm_(&transa,
-                   &transb,
-                   &allbands_sto,
-                   &perbands_ks,
-                   &npw,
-                   &conjfactor,
-                   rightchi_all->get_pointer(),
-                   &npwx,
-                   &vkspsi(idnb, 0),
-                   &npwx,
-                   &zero,
-                   j1mat,
-                   &allbands_sto);
-
-            //(<\psi|Hv|\chi>)^T
-            // for(int i = 0 ; i < perbands_ks ; ++i)
-            // {
-            //     double* evmat = &j2(id, 0 + i * allbands_sto);
-            //     double* vmat = &j1(id, 0 + i * allbands_sto);
-            //     double ei = en[i];
-            //     for(int j = 0 ; j < allbands_sto ; ++j)
-            //     {
-            //         evmat[j] = vmat[j] * ei;
-            //     }
-            // }
-
-            //(<\psi|vH|\chi>)^T
-            cgemm_(&transa,
-                   &transb,
-                   &allbands_sto,
-                   &perbands_ks,
-                   &npw,
-                   &conjfactor,
-                   righthchi_all->get_pointer(),
-                   &npwx,
-                   &vkspsi(idnb, 0),
-                   &npwx,
-                   &zero,
-                   j2mat,
-                   &allbands_sto);
+            j2chi(0, ib, ig) = 0.5*( hvchi(0, ib, ig) + vhchi(0, ib, ig)) - mu * vchi(0, ib, ig);
         }
     }
-
-    int remain = perbands_sto;
-    int startnb = 0;
-    while (remain > 0)
-    {
-        int tmpnb = std::min(remain, bsize_psi);
-        // v|\chi>
-        velop.act(&leftchi, tmpnb, &leftchi(0, startnb, 0), batch_vchi.get_pointer());
-        convert_psi(batch_vchi, f_batch_vchi);
-        // v|H\chi>
-        velop.act(&leftchi, tmpnb, &left_hchi(0, startnb, 0), batch_vhchi.get_pointer());
-        convert_psi(batch_vhchi, f_batch_vhchi);
-        // 2. <\chi|J|\psi>
-        // (perbands_sto, allbands_ks)
-        if (allbands_ks > 0)
-        {
-            for (int id = 0; id < ndim; ++id)
-            {
-                const int idnb = id * tmpnb;
-                const int jbais = perbands_ks * allbands_sto + startnb;
-                std::complex<float>* j1mat = &j1[id * dim_jmatrix + jbais];
-                std::complex<float>* j2mat = &j2[id * dim_jmatrix + jbais];
-                //<\chi|v|\psi>
-                cgemm_(&transa,
-                       &transb,
-                       &tmpnb,
-                       &allbands_ks,
-                       &npw,
-                       &float_factor,
-                       &f_batch_vchi(idnb, 0),
-                       &npwx,
-                       kspsi_all.get_pointer(),
-                       &npwx,
-                       &zero,
-                       j1mat,
-                       &perbands_sto);
-
-                //<\chi|vH|\psi> = \epsilon * <\chi|v|\psi>
-                // for(int i = 0 ; i < allbands_ks ; ++i)
-                // {
-                //     double* evmat = &j2(id, jbais + i * allbands_sto);
-                //     double* vmat = &j1(id, jbais + i * allbands_sto);
-                //     double ei = en_all[i];
-                //     for(int j = 0 ; j < tmpnb ; ++j)
-                //     {
-                //         evmat[j] = vmat[j] * en_all[i];
-                //     }
-                // }
-
-                //<\chi|Hv|\psi>
-                cgemm_(&transa,
-                       &transb,
-                       &tmpnb,
-                       &allbands_ks,
-                       &npw,
-                       &float_factor,
-                       &f_batch_vhchi(idnb, 0),
-                       &npwx,
-                       kspsi_all.get_pointer(),
-                       &npwx,
-                       &zero,
-                       j2mat,
-                       &perbands_sto);
-            }
-        }
-
-        // 3. <\chi|J|\chi>
-        // (perbands_sto, allbands_sto)
-        for (int id = 0; id < ndim; ++id)
-        {
-            const int idnb = id * tmpnb;
-            const int jbais = perbands_ks * allbands_sto + perbands_sto * allbands_ks + startnb;
-            std::complex<float>* j1mat = &j1[id * dim_jmatrix + jbais];
-            std::complex<float>* j2mat = &j2[id * dim_jmatrix + jbais];
-            std::complex<float>* tmpjmat = &tmpj[id * allbands_sto * perbands_sto + startnb];
-            //<\chi|v|\chi>
-            cgemm_(&transa,
-                   &transb,
-                   &tmpnb,
-                   &allbands_sto,
-                   &npw,
-                   &float_factor,
-                   &f_batch_vchi(idnb, 0),
-                   &npwx,
-                   rightchi_all->get_pointer(),
-                   &npwx,
-                   &zero,
-                   j1mat,
-                   &perbands_sto);
-
-            //<\chi|Hv|\chi>
-            cgemm_(&transa,
-                   &transb,
-                   &tmpnb,
-                   &allbands_sto,
-                   &npw,
-                   &float_factor,
-                   &f_batch_vhchi(idnb, 0),
-                   &npwx,
-                   rightchi_all->get_pointer(),
-                   &npwx,
-                   &zero,
-                   j2mat,
-                   &perbands_sto);
-
-            //<\chi|vH|\chi>
-            cgemm_(&transa,
-                   &transb,
-                   &tmpnb,
-                   &allbands_sto,
-                   &npw,
-                   &float_factor,
-                   &f_batch_vchi(idnb, 0),
-                   &npwx,
-                   righthchi_all->get_pointer(),
-                   &npwx,
-                   &zero,
-                   tmpjmat,
-                   &perbands_sto);
-        }
-
-        remain -= tmpnb;
-        startnb += tmpnb;
-        if (remain == 0)
-            break;
-    }
-
-    for (int id = 0; id < ndim; ++id)
-    {
-        for (int i = 0; i < perbands_ks; ++i)
-        {
-            const float ei = static_cast<float>(en[i]);
-            const int jst = i * allbands_sto;
-            std::complex<float>* j2mat = j2.data() + id * dim_jmatrix + jst;
-            std::complex<float>* j1mat = j1.data() + id * dim_jmatrix + jst;
-            if (leftfact == nullptr)
-            {
-                for (int j = 0; j < allbands_sto; ++j)
-                {
-                    j2mat[j] = 0.5f * j2mat[j] + (0.5f * ei - mu) * j1mat[j];
-                }
-            }
-            else
-            {
-                const std::complex<float> jfac = static_cast<std::complex<float>>(leftfact[i]);
-                for (int j = 0; j < allbands_sto; ++j)
-                {
-                    j2mat[j] = jfac * (0.5f * j2mat[j] + (0.5f * ei - mu) * j1mat[j]);
-                    j1mat[j] *= jfac;
-                }
-            }
-        }
-
-        for (int i = 0; i < allbands_ks; ++i)
-        {
-            const float ei = static_cast<float>(en_all[i]);
-            const int jst = perbands_ks * allbands_sto + i * perbands_sto;
-            std::complex<float>* j2mat = j2.data() + id * dim_jmatrix + jst;
-            std::complex<float>* j1mat = j1.data() + id * dim_jmatrix + jst;
-            if (rightfact == nullptr)
-            {
-                for (int j = 0; j < perbands_sto; ++j)
-                {
-                    j2mat[j] = 0.5f * j2mat[j] + (0.5f * ei - mu) * j1mat[j];
-                }
-            }
-            else
-            {
-                const std::complex<float> jfac = static_cast<std::complex<float>>(rightf_all[i]);
-                for (int j = 0; j < perbands_sto; ++j)
-                {
-                    j2mat[j] = jfac * (0.5f * j2mat[j] + (0.5f * ei - mu) * j1mat[j]);
-                    j1mat[j] *= jfac;
-                }
-            }
-        }
-
-        const int jst = perbands_ks * allbands_sto + perbands_sto * allbands_ks;
-        const int ed = dim_jmatrix - jst;
-        std::complex<float>* j2mat = j2.data() + id * dim_jmatrix + jst;
-        std::complex<float>* j1mat = j1.data() + id * dim_jmatrix + jst;
-        std::complex<float>* tmpjmat = tmpj.data() + id * allbands_sto * perbands_sto;
-
-        for (int j = 0; j < ed; ++j)
-        {
-            j2mat[j] = 0.5f * (j2mat[j] + tmpjmat[j]) - mu * j1mat[j];
-        }
-    }
-
-#ifdef __MPI
-    MPI_Allreduce(MPI_IN_PLACE, j1.data(), ndim * dim_jmatrix, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, j2.data(), ndim * dim_jmatrix, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
-#endif
-    delete[] tmprightf_all;
-
-    ModuleBase::timer::tick(this->classname, "cal_jmatrix");
-
-    return;
 }
 
 void ESolver_SDFT_PW::sKG(const int nche_KG,
@@ -576,11 +206,10 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
     ModuleBase::TITLE(this->classname, "sKG");
     ModuleBase::timer::tick(this->classname, "sKG");
     std::cout << "Calculating conductivity...." << std::endl;
-    // if (GlobalV::NSTOGROUP > 1)
-    // {
-    //     ModuleBase::WARNING_QUIT("ESolver_SDFT_PW", "sKG is not supported in parallel!");
-    // }
-
+    if (nbatch > 1)
+    {
+        ModuleBase::WARNING_QUIT("ESolver_SDFT_PW", "nbatch > 1!");
+    }
     //------------------------------------------------------------------
     //                    Init
     //------------------------------------------------------------------
@@ -624,7 +253,6 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
 
     // Init Chebyshev
     ModuleBase::Chebyshev<double> che(this->nche_sto);
-    ModuleBase::Chebyshev<double> chet(nche_KG);
     ModuleBase::Chebyshev<double> chemt(nche_KG);
     Stochastic_Iter& stoiter = ((hsolver::HSolverPW_SDFT*)phsol)->stoiter;
     Stochastic_hchi& stohchi = stoiter.stohchi;
@@ -636,36 +264,35 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
     // Prepare Chebyshev coefficients for exp(-i H/\hbar t)
     const double mu = this->pelec->eferm.ef;
     stoiter.stofunc.mu = mu;
-    stoiter.stofunc.t = 0.5 * dt * nbatch;
-    chet.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::nsin);
+    stoiter.stofunc.t = dt * nbatch;
     chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
     std::complex<double>*batchcoef = nullptr, *batchmcoef = nullptr;
-    if (nbatch > 1)
-    {
-        batchcoef = new std::complex<double>[nche_KG * nbatch];
-        std::complex<double>* tmpcoef = batchcoef + (nbatch - 1) * nche_KG;
-        batchmcoef = new std::complex<double>[nche_KG * nbatch];
-        std::complex<double>* tmpmcoef = batchmcoef + (nbatch - 1) * nche_KG;
-        for (int i = 0; i < nche_KG; ++i)
-        {
-            tmpcoef[i] = chet.coef_complex[i];
-            tmpmcoef[i] = chemt.coef_complex[i];
-        }
-        for (int ib = 0; ib < nbatch - 1; ++ib)
-        {
-            tmpcoef = batchcoef + ib * nche_KG;
-            tmpmcoef = batchmcoef + ib * nche_KG;
-            stoiter.stofunc.t = 0.5 * dt * (ib + 1);
-            chet.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::nsin);
-            chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
-            for (int i = 0; i < nche_KG; ++i)
-            {
-                tmpcoef[i] = chet.coef_complex[i];
-                tmpmcoef[i] = chemt.coef_complex[i];
-            }
-        }
-        stoiter.stofunc.t = 0.5 * dt * nbatch;
-    }
+    // if (nbatch > 1)
+    // {
+    //     batchcoef = new std::complex<double>[nche_KG * nbatch];
+    //     std::complex<double>* tmpcoef = batchcoef + (nbatch - 1) * nche_KG;
+    //     batchmcoef = new std::complex<double>[nche_KG * nbatch];
+    //     std::complex<double>* tmpmcoef = batchmcoef + (nbatch - 1) * nche_KG;
+    //     for (int i = 0; i < nche_KG; ++i)
+    //     {
+    //         tmpcoef[i] = chet.coef_complex[i];
+    //         tmpmcoef[i] = chemt.coef_complex[i];
+    //     }
+    //     for (int ib = 0; ib < nbatch - 1; ++ib)
+    //     {
+    //         tmpcoef = batchcoef + ib * nche_KG;
+    //         tmpmcoef = batchmcoef + ib * nche_KG;
+    //         stoiter.stofunc.t = 0.5 * dt * (ib + 1);
+    //         chet.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::nsin);
+    //         chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
+    //         for (int i = 0; i < nche_KG; ++i)
+    //         {
+    //             tmpcoef[i] = chet.coef_complex[i];
+    //             tmpmcoef[i] = chemt.coef_complex[i];
+    //         }
+    //     }
+    //     stoiter.stofunc.t = 0.5 * dt * nbatch;
+    // }
 
     // ik loop
     ModuleBase::timer::tick(this->classname, "kloop");
@@ -682,187 +309,119 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         stoiter.stohchi.current_ik = ik;
         const int npw = kv.ngk[ik];
 
-        // get allbands_ks
-        int cutib0 = 0;
-        if (GlobalV::NBANDS > 1)
-        {
-            double Emax_KS = this->pelec->ekb(ik, GlobalV::NBANDS - 1);
-            for (cutib0 = GlobalV::NBANDS - 2; cutib0 >= 0; --cutib0)
-            {
-                if (Emax_KS - this->pelec->ekb(ik, cutib0) > dEcut)
-                {
-                    break;
-                }
-            }
-            cutib0++;
-            double Emin_KS = this->pelec->ekb(ik, cutib0);
-            double dE = stoiter.stofunc.Emax - Emin_KS + wcut / ModuleBase::Ry_to_eV;
-            std::cout << "Emin_KS(" << cutib0 << "): " << Emin_KS * ModuleBase::Ry_to_eV
-                      << " eV; Emax: " << stoiter.stofunc.Emax * ModuleBase::Ry_to_eV
-                      << " eV; Recommended dt: " << 0.25 * M_PI / dE << " a.u." << std::endl;
-        }
         // Parallel for bands
-        int allbands_ks = GlobalV::NBANDS - cutib0;
+        int allbands_ks = GlobalV::NBANDS;
         parallel_distribution paraks(allbands_ks, GlobalV::NSTOGROUP, GlobalV::MY_STOGROUP);
         int perbands_ks = paraks.num_per;
         int ib0_ks = paraks.start;
-        ib0_ks += GlobalV::NBANDS - allbands_ks;
         int perbands_sto = this->stowf.nchip[ik];
         int perbands = perbands_sto + perbands_ks;
-        int allbands_sto = perbands_sto;
-        int allbands = perbands;
-#ifdef __MPI
-        MPI_Allreduce(&perbands, &allbands, 1, MPI_INT, MPI_SUM, PARAPW_WORLD);
-        allbands_sto = allbands - allbands_ks;
-        info_gatherv ks_fact(perbands_ks, GlobalV::NSTOGROUP, 1, PARAPW_WORLD);
-        info_gatherv sto_npwx(perbands_sto, GlobalV::NSTOGROUP, npwx, PARAPW_WORLD);
-#endif
-        const int bandsinfo[6]{perbands_ks, perbands_sto, perbands, allbands_ks, allbands_sto, allbands};
-        double *en = nullptr, *en_all = nullptr;
-        if (allbands_ks > 0)
-        {
-            en_all = &(this->pelec->ekb(ik, GlobalV::NBANDS - allbands_ks));
-        }
-        if (perbands_ks > 0)
-        {
-            en = new double[perbands_ks];
-            for (int ib = 0; ib < perbands_ks; ++ib)
-            {
-                en[ib] = this->pelec->ekb(ik, ib0_ks + ib);
-            }
-        }
 
-        //-----------------------------------------------------------
-        //               ks conductivity
-        //-----------------------------------------------------------
-        if (GlobalV::MY_STOGROUP == 0 && allbands_ks > 0)
-            jjcorr_ks(ik, nt, dt, dEcut, this->pelec->wg, velop, ct11, ct12, ct22);
-
-        //-----------------------------------------------------------
-        //               sto conductivity
-        //-----------------------------------------------------------
         //-------------------     allocate  -------------------------
-        size_t ks_memory_cost = perbands_ks * npwx * sizeof(std::complex<float>);
-        psi::Psi<std::complex<double>> kspsi(1, perbands_ks, npwx, kv.ngk.data());
-        psi::Psi<std::complex<double>> vkspsi(1, perbands_ks * ndim, npwx, kv.ngk.data());
-        std::vector<std::complex<double>> expmtmf_fact(perbands_ks), expmtf_fact(perbands_ks);
-        psi::Psi<std::complex<float>> f_kspsi(1, perbands_ks, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::kspsi", ks_memory_cost);
-        psi::Psi<std::complex<float>> f_vkspsi(1, perbands_ks * ndim, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::vkspsi", ks_memory_cost);
-        psi::Psi<std::complex<float>>* kspsi_all = &f_kspsi;
-
-        size_t sto_memory_cost = perbands_sto * npwx * sizeof(std::complex<double>);
-        psi::Psi<std::complex<double>> sfchi(1, perbands_sto, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::sfchi", sto_memory_cost);
-        psi::Psi<std::complex<double>> smfchi(1, perbands_sto, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::smfchi", sto_memory_cost);
-#ifdef __MPI
-        psi::Psi<std::complex<float>> chi_all, hchi_all, psi_all;
-        if (GlobalV::NSTOGROUP > 1)
-        {
-            chi_all.resize(1, allbands_sto, npwx);
-            hchi_all.resize(1, allbands_sto, npwx);
-            ModuleBase::Memory::record("SDFT::chi_all", allbands_sto * npwx * sizeof(std::complex<float>));
-            ModuleBase::Memory::record("SDFT::hchi_all", allbands_sto * npwx * sizeof(std::complex<float>));
-            psi_all.resize(1, allbands_ks, npwx);
-            ModuleBase::Memory::record("SDFT::kspsi_all", allbands_ks * npwx * sizeof(std::complex<float>));
-            for (int ib = 0; ib < allbands_ks; ++ib)
-            {
-                for (int ig = 0; ig < npw; ++ig)
-                {
-                    psi_all(0, ib, ig)
-                        = static_cast<std::complex<float>>(psi[0](GlobalV::NBANDS - allbands_ks + ib, ig));
-                }
-            }
-            kspsi_all = &psi_all;
-            f_kspsi.resize(1, 1, 1);
-        }
-#endif
-
-        const int nbatch_psi = npart_sto;
-        const int bsize_psi = ceil(double(perbands_sto) / nbatch_psi);
-        psi::Psi<std::complex<double>> batch_vchi(1, bsize_psi * ndim, npwx, kv.ngk.data());
-        psi::Psi<std::complex<double>> batch_vhchi(1, bsize_psi * ndim, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::batchjpsi", 3 * bsize_psi * ndim * npwx * sizeof(std::complex<double>));
-
-        //-------------------     sqrt(f)|psi>   sqrt(1-f)|psi>   ---------------
+        size_t memory_cost = perbands * npwx * sizeof(std::complex<double>);
+        psi::Psi<std::complex<double>> right(1, perbands, npwx, kv.ngk.data());
+        ModuleBase::Memory::record("SDFT::right", memory_cost);
+        
+        //prepare |right>
         for (int ib = 0; ib < perbands_ks; ++ib)
         {
             for (int ig = 0; ig < npw; ++ig)
             {
-                kspsi(0, ib, ig) = psi[0](ib0_ks + ib, ig);
+                right(0,ib,ig) = psi[0](ib0_ks + ib, ig);
             }
-            double fi = stoiter.stofunc.fd(en[ib]);
-            expmtmf_fact[ib] = 1 - fi;
-            expmtf_fact[ib] = fi;
         }
-        // v|\psi>
-        velop.act(&kspsi, perbands_ks, kspsi.get_pointer(), vkspsi.get_pointer());
-        // convert to complex<float>
-        if (GlobalV::NSTOGROUP == 1)
+        for (int ib = 0; ib < perbands_sto; ++ib)
         {
-            convert_psi(kspsi, f_kspsi);
+            for (int ig = 0; ig < npw; ++ig)
+            {
+                right(0, ib + perbands_ks, ig) = stopsi[0](ib, ig);
+            }
         }
-        convert_psi(vkspsi, f_vkspsi);
-        kspsi.resize(1, 1, 1);
-        vkspsi.resize(1, 1, 1);
 
+        //sqrt(f)|right>
+        psi::Psi<std::complex<double>>& sfright = right;
         che.calcoef_real(&stoiter.stofunc, &Sto_Func<double>::nroot_fd);
         che.calfinalvec_real(&stohchi,
                              &Stochastic_hchi::hchi_norm,
-                             stopsi->get_pointer(),
-                             sfchi.get_pointer(),
+                             right.get_pointer(),
+                             sfright.get_pointer(),
                              npw,
                              npwx,
-                             perbands_sto);
+                             perbands);
+        
+        //prepare sqrt(f)|ileft>
+        psi::Psi<std::complex<double>> sfleft(1, perbands, npwx, kv.ngk.data());
+        ModuleBase::Memory::record("SDFT::left", memory_cost);
+        for(int ib = 0; ib < perbands; ++ib)
+        {
+            for(int ig = 0; ig < npw; ++ig)
+            {
+                sfleft(0, ib, ig) = ModuleBase::IMAG_UNIT * sfright(0, ib, ig);
+            }
+        }
+        
+        psi::Psi<std::complex<double>> j1right(1, perbands*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<double>> j2right(1, perbands*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<double>> j1left(1, perbands*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<double>> j2left(1, perbands*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<double>> tmpvchi(1, perbands*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<double>> tmphchi(1, perbands, npwx, kv.ngk.data());
+        ModuleBase::Memory::record("SDFT::vchi", memory_cost*16);
+        
+        // J|sfileft>
+        this->calj12(ik, perbands, sfleft, j1left, j2left, tmpvchi, tmphchi, velop);
+
+        // (1-f)J|sfileft>
         che.calcoef_real(&stoiter.stofunc, &Sto_Func<double>::nroot_mfd);
         che.calfinalvec_real(&stohchi,
                              &Stochastic_hchi::hchi_norm,
-                             stopsi->get_pointer(),
-                             smfchi.get_pointer(),
+                             j1left.get_pointer(),
+                             j1left.get_pointer(),
                              npw,
                              npwx,
-                             perbands_sto);
-
+                             perbands*3);
+        che.calfinalvec_real(&stohchi,
+                             &Stochastic_hchi::hchi_norm,
+                             j1left.get_pointer(),
+                             j1left.get_pointer(),
+                             npw,
+                             npwx,
+                             perbands*3);
+        che.calfinalvec_real(&stohchi,
+                             &Stochastic_hchi::hchi_norm,
+                             j2left.get_pointer(),
+                             j2left.get_pointer(),
+                             npw,
+                             npwx,
+                             perbands*3);
+        che.calfinalvec_real(&stohchi,
+                             &Stochastic_hchi::hchi_norm,
+                             j2left.get_pointer(),
+                             j2left.get_pointer(),
+                             npw,
+                             npwx,
+                             perbands*3);
+        
         //------------------------  allocate ------------------------
-        psi::Psi<std::complex<double>>& expmtsfchi = sfchi;
-        psi::Psi<std::complex<double>>& expmtsmfchi = smfchi;
-        psi::Psi<std::complex<double>> exptsfchi = expmtsfchi;
-        ModuleBase::Memory::record("SDFT::exptsfchi", sto_memory_cost);
-        psi::Psi<std::complex<double>> exptsmfchi = expmtsmfchi;
-        ModuleBase::Memory::record("SDFT::exptsmfchi", sto_memory_cost);
-        psi::Psi<std::complex<double>> poly_expmtsfchi, poly_expmtsmfchi;
-        psi::Psi<std::complex<double>> poly_exptsfchi, poly_exptsmfchi;
-        if (nbatch > 1)
-        {
-            poly_exptsfchi.resize(nche_KG, perbands_sto, npwx);
-            ModuleBase::Memory::record("SDFT::poly_exptsfchi",
-                                       sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
+        
+        // if (nbatch > 1)
+        // {
+        //     poly_exptsfchi.resize(nche_KG, perbands_sto, npwx);
+        //     ModuleBase::Memory::record("SDFT::poly_exptsfchi",
+        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
 
-            poly_exptsmfchi.resize(nche_KG, perbands_sto, npwx);
-            ModuleBase::Memory::record("SDFT::poly_exptsmfchi",
-                                       sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
+        //     poly_exptsmfchi.resize(nche_KG, perbands_sto, npwx);
+        //     ModuleBase::Memory::record("SDFT::poly_exptsmfchi",
+        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
 
-            poly_expmtsfchi.resize(nche_KG, perbands_sto, npwx);
-            ModuleBase::Memory::record("SDFT::poly_expmtsfchi",
-                                       sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
+        //     poly_expmtsfchi.resize(nche_KG, perbands_sto, npwx);
+        //     ModuleBase::Memory::record("SDFT::poly_expmtsfchi",
+        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
 
-            poly_expmtsmfchi.resize(nche_KG, perbands_sto, npwx);
-            ModuleBase::Memory::record("SDFT::poly_expmtsmfchi",
-                                       sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
-        }
-
-        const int dim_jmatrix = perbands_ks * allbands_sto + perbands_sto * allbands;
-        parallel_distribution parajmat(ndim * dim_jmatrix, GlobalV::NPROC_IN_POOL, GlobalV::RANK_IN_POOL);
-        std::vector<std::complex<float>> j1l(ndim * dim_jmatrix), j2l(ndim * dim_jmatrix);
-        ModuleBase::Memory::record("SDFT::j1l", sizeof(std::complex<float>) * ndim * dim_jmatrix);
-        ModuleBase::Memory::record("SDFT::j2l", sizeof(std::complex<float>) * ndim * dim_jmatrix);
-        std::vector<std::complex<float>> j1r(ndim * dim_jmatrix), j2r(ndim * dim_jmatrix);
-        ModuleBase::Memory::record("SDFT::j1r", sizeof(std::complex<float>) * ndim * dim_jmatrix);
-        ModuleBase::Memory::record("SDFT::j2r", sizeof(std::complex<float>) * ndim * dim_jmatrix);
-        psi::Psi<std::complex<double>> tmphchil(1, perbands_sto, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::tmphchil/r", sto_memory_cost * 2);
+        //     poly_expmtsmfchi.resize(nche_KG, perbands_sto, npwx);
+        //     ModuleBase::Memory::record("SDFT::poly_expmtsmfchi",
+        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
+        // }
 
         //------------------------  t loop  --------------------------
         std::cout << "ik=" << ik << ": ";
@@ -889,219 +448,93 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                 }
             }
 
-            // time evolution exp(-iHt)|\psi_ks>
-            // KS
             ModuleBase::timer::tick(this->classname, "evolution");
-            for (int ib = 0; ib < perbands_ks; ++ib)
-            {
-                double eigen = en[ib];
-                const std::complex<double> expmfactor = exp(ModuleBase::NEG_IMAG_UNIT * eigen * dt);
-                expmtf_fact[ib] *= expmfactor;
-                expmtmf_fact[ib] *= expmfactor;
-            }
             // Sto
-            if (nbatch == 1)
+            // if (nbatch == 1)
+            // {
+            chemt.calfinalvec_complex(&stohchi,
+                                      &Stochastic_hchi::hchi_norm,
+                                      sfright.get_pointer(),
+                                      sfright.get_pointer(),
+                                      npw,
+                                      npwx,
+                                      perbands);
+            chemt.calfinalvec_complex(&stohchi,
+                                     &Stochastic_hchi::hchi_norm,
+                                     j1left.get_pointer(),
+                                     j1left.get_pointer(),
+                                     npw,
+                                     npwx,
+                                     perbands*3);
+            chemt.calfinalvec_complex(&stohchi,
+                                     &Stochastic_hchi::hchi_norm,
+                                     j2left.get_pointer(),
+                                     j2left.get_pointer(),
+                                     npw,
+                                     npwx,
+                                     perbands*3);
+            this->calj12(ik, perbands, sfright, j1right, j2right, tmpvchi, tmphchi, velop);
+            
+            ////Im<left|right>=Re<left|-i|right>=Re<ileft|J|right>
+            for(int ib = 0 ; ib < perbands*3 ; ++ib)
             {
-                chemt.calfinalvec_complex(&stohchi,
-                                          &Stochastic_hchi::hchi_norm,
-                                          expmtsfchi.get_pointer(),
-                                          expmtsfchi.get_pointer(),
-                                          npw,
-                                          npwx,
-                                          perbands_sto);
-                chemt.calfinalvec_complex(&stohchi,
-                                          &Stochastic_hchi::hchi_norm,
-                                          expmtsmfchi.get_pointer(),
-                                          expmtsmfchi.get_pointer(),
-                                          npw,
-                                          npwx,
-                                          perbands_sto);
-                chet.calfinalvec_complex(&stohchi,
-                                         &Stochastic_hchi::hchi_norm,
-                                         exptsfchi.get_pointer(),
-                                         exptsfchi.get_pointer(),
-                                         npw,
-                                         npwx,
-                                         perbands_sto);
-                chet.calfinalvec_complex(&stohchi,
-                                         &Stochastic_hchi::hchi_norm,
-                                         exptsmfchi.get_pointer(),
-                                         exptsmfchi.get_pointer(),
-                                         npw,
-                                         npwx,
-                                         perbands_sto);
+                
+                ct11[it] += ModuleBase::GlobalFunc::ddot_real(npw,&j1left(0,ib,0), &j1right(0,ib,0),false) * kv.wk[ik] / 2,0;
+                double tmp12
+                    = ModuleBase::GlobalFunc::ddot_real(npw,&j1left(0,ib,0),&j2right(0,ib,0),false);
+                double tmp21
+                    = ModuleBase::GlobalFunc::ddot_real(npw,&j2left(0,ib,0),&j1right(0,ib,0),false);
+                ct12[it] -= 0.5*(tmp12 + tmp21) * kv.wk[ik] / 2.0;
+                // std::cout<<tmp12<<" "<<tmp21<<std::endl;
+                ct22[it] += ModuleBase::GlobalFunc::ddot_real(npw,&j2left(0,ib,0),&j2right(0,ib,0),false) * kv.wk[ik] / 2.0;
             }
-            else
-            {
-                std::complex<double>* tmppolyexpmtsfchi = poly_expmtsfchi.get_pointer();
-                std::complex<double>* tmppolyexpmtsmfchi = poly_expmtsmfchi.get_pointer();
-                std::complex<double>* tmppolyexptsfchi = poly_exptsfchi.get_pointer();
-                std::complex<double>* tmppolyexptsmfchi = poly_exptsmfchi.get_pointer();
-                std::complex<double>* stoexpmtsfchi = expmtsfchi.get_pointer();
-                std::complex<double>* stoexpmtsmfchi = expmtsmfchi.get_pointer();
-                std::complex<double>* stoexptsfchi = exptsfchi.get_pointer();
-                std::complex<double>* stoexptsmfchi = exptsmfchi.get_pointer();
-                if ((it - 1) % nbatch == 0)
-                {
-                    chet.calpolyvec_complex(&stohchi,
-                                            &Stochastic_hchi::hchi_norm,
-                                            stoexptsfchi,
-                                            tmppolyexptsfchi,
-                                            npw,
-                                            npwx,
-                                            perbands_sto);
-                    chet.calpolyvec_complex(&stohchi,
-                                            &Stochastic_hchi::hchi_norm,
-                                            stoexptsmfchi,
-                                            tmppolyexptsmfchi,
-                                            npw,
-                                            npwx,
-                                            perbands_sto);
-                    chemt.calpolyvec_complex(&stohchi,
-                                             &Stochastic_hchi::hchi_norm,
-                                             stoexpmtsfchi,
-                                             tmppolyexpmtsfchi,
-                                             npw,
-                                             npwx,
-                                             perbands_sto);
-                    chemt.calpolyvec_complex(&stohchi,
-                                             &Stochastic_hchi::hchi_norm,
-                                             stoexpmtsmfchi,
-                                             tmppolyexpmtsmfchi,
-                                             npw,
-                                             npwx,
-                                             perbands_sto);
-                }
+            // }
+            
+            
+            
+            // else
+            // {
+            //     std::complex<double>* tmppolyexpmtsfchi = poly_expmtsfchi.get_pointer();
+            //     std::complex<double>* tmppolyexpmtsmfchi = poly_expmtsmfchi.get_pointer();
+            //     std::complex<double>* tmppolyexptsfchi = poly_exptsfchi.get_pointer();
+            //     std::complex<double>* tmppolyexptsmfchi = poly_exptsmfchi.get_pointer();
+            //     std::complex<double>* stoexpmtsfchi = expmtsfchi.get_pointer();
+            //     std::complex<double>* stoexpmtsmfchi = expmtsmfchi.get_pointer();
+            //     std::complex<double>* stoexptsfchi = exptsfchi.get_pointer();
+            //     std::complex<double>* stoexptsmfchi = exptsmfchi.get_pointer();
+            //     if ((it - 1) % nbatch == 0)
+            //     {
+            //         chet.calpolyvec_complex(&stohchi,
+            //                                 &Stochastic_hchi::hchi_norm,
+            //                                 stoexptsfchi,
+            //                                 tmppolyexptsfchi,
+            //                                 npw,
+            //                                 npwx,
+            //                                 perbands_sto);
+            //     }
 
-                std::complex<double>* tmpcoef = batchcoef + (it - 1) % nbatch * nche_KG;
-                std::complex<double>* tmpmcoef = batchmcoef + (it - 1) % nbatch * nche_KG;
-                const char transa = 'N';
-                const int LDA = perbands_sto * npwx;
-                const int M = perbands_sto * npwx;
-                const int N = nche_KG;
-                const int inc = 1;
-                zgemv_(&transa,
-                       &M,
-                       &N,
-                       &ModuleBase::ONE,
-                       tmppolyexptsfchi,
-                       &LDA,
-                       tmpcoef,
-                       &inc,
-                       &ModuleBase::ZERO,
-                       stoexptsfchi,
-                       &inc);
-                zgemv_(&transa,
-                       &M,
-                       &N,
-                       &ModuleBase::ONE,
-                       tmppolyexptsmfchi,
-                       &LDA,
-                       tmpcoef,
-                       &inc,
-                       &ModuleBase::ZERO,
-                       stoexptsmfchi,
-                       &inc);
-                zgemv_(&transa,
-                       &M,
-                       &N,
-                       &ModuleBase::ONE,
-                       tmppolyexpmtsfchi,
-                       &LDA,
-                       tmpmcoef,
-                       &inc,
-                       &ModuleBase::ZERO,
-                       stoexpmtsfchi,
-                       &inc);
-                zgemv_(&transa,
-                       &M,
-                       &N,
-                       &ModuleBase::ONE,
-                       tmppolyexpmtsmfchi,
-                       &LDA,
-                       tmpmcoef,
-                       &inc,
-                       &ModuleBase::ZERO,
-                       stoexpmtsmfchi,
-                       &inc);
-            }
+            //     std::complex<double>* tmpcoef = batchcoef + (it - 1) % nbatch * nche_KG;
+            //     std::complex<double>* tmpmcoef = batchmcoef + (it - 1) % nbatch * nche_KG;
+            //     const char transa = 'N';
+            //     const int LDA = perbands_sto * npwx;
+            //     const int M = perbands_sto * npwx;
+            //     const int N = nche_KG;
+            //     const int inc = 1;
+            //     zgemv_(&transa,
+            //            &M,
+            //            &N,
+            //            &ModuleBase::ONE,
+            //            tmppolyexptsfchi,
+            //            &LDA,
+            //            tmpcoef,
+            //            &inc,
+            //            &ModuleBase::ZERO,
+            //            stoexptsfchi,
+            //            &inc);
+            // }
             ModuleBase::timer::tick(this->classname, "evolution");
-
-            // calculate i<\psi|sqrt(f) exp(-iHt/2)*J*exp(iHt/2) sqrt(1-f)|\psi>^+
-            //         = i<\psi|sqrt(1-f) exp(-iHt/2)*J*exp(iHt/2) sqrt(f)|\psi>
-            cal_jmatrix(*kspsi_all,
-                        f_vkspsi,
-                        en,
-                        en_all,
-                        nullptr,
-                        nullptr,
-                        exptsmfchi,
-                        exptsfchi,
-                        tmphchil,
-                        batch_vchi,
-                        batch_vhchi,
-#ifdef __MPI
-                        chi_all,
-                        hchi_all,
-                        (void*)&ks_fact,
-                        (void*)&sto_npwx,
-#endif
-                        bsize_psi,
-                        j1l,
-                        j2l,
-                        velop,
-                        ik,
-                        ModuleBase::IMAG_UNIT,
-                        bandsinfo);
-
-            // calculate <\psi|sqrt(1-f) exp(iHt/2)*J*exp(-iHt/2) sqrt(f)|\psi>
-            cal_jmatrix(*kspsi_all,
-                        f_vkspsi,
-                        en,
-                        en_all,
-                        expmtmf_fact.data(),
-                        expmtf_fact.data(),
-                        expmtsmfchi,
-                        expmtsfchi,
-                        tmphchil,
-                        batch_vchi,
-                        batch_vhchi,
-#ifdef __MPI
-                        chi_all,
-                        hchi_all,
-                        (void*)&ks_fact,
-                        (void*)&sto_npwx,
-#endif
-                        bsize_psi,
-                        j1r,
-                        j2r,
-                        velop,
-                        ik,
-                        ModuleBase::ONE,
-                        bandsinfo);
-
-            // prepare for parallel
-            int num_per = parajmat.num_per;
-            int st_per = parajmat.start;
-            // Re(i<psi|sqrt(f)j(1-f) exp(iHt)|psi><psi|j exp(-iHt)\sqrt(f)|psi>)
-            // Im(l_ij*r_ji)=Re(i l^*_ij*r^+_ij)=Re(i l^*_i*r^+_i)
-            // ddot_real = real(A^*_i * B_i)
-            ModuleBase::timer::tick(this->classname, "ddot_real");
-            ct11[it] += static_cast<double>(
-                ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j1r.data() + st_per, false) * kv.wk[ik]
-                / 2.0);
-            double tmp12 = static_cast<double>(
-                ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j2r.data() + st_per, false));
-            double tmp21 = static_cast<double>(
-                ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j1r.data() + st_per, false));
-            ct12[it] -= 0.5 * (tmp12 + tmp21) * kv.wk[ik] / 2.0;
-            ct22[it] += static_cast<double>(
-                ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j2r.data() + st_per, false) * kv.wk[ik]
-                / 2.0);
-            ModuleBase::timer::tick(this->classname, "ddot_real");
         }
         std::cout << std::endl;
-        delete[] en;
     } // ik loop
     ModuleBase::timer::tick(this->classname, "kloop");
     delete[] batchcoef;
