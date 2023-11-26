@@ -309,6 +309,16 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         stoiter.stohchi.current_ik = ik;
         const int npw = kv.ngk[ik];
 
+        double Emin = stoiter.stofunc.Emin;
+        if (GlobalV::NBANDS > 0)
+        {
+            Emin = this->pelec->ekb(ik, 0);
+        }
+        double dE = stoiter.stofunc.Emax - Emin + wcut / ModuleBase::Ry_to_eV;
+        std::cout << "Emin: " << Emin * ModuleBase::Ry_to_eV
+                  << " eV; Emax: " << stoiter.stofunc.Emax * ModuleBase::Ry_to_eV
+                  << " eV; Recommended dt: " << 2 * M_PI / dE << " a.u." << std::endl;
+
         // Parallel for bands
         int allbands_ks = GlobalV::NBANDS;
         parallel_distribution paraks(allbands_ks, GlobalV::NSTOGROUP, GlobalV::MY_STOGROUP);
