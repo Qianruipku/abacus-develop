@@ -72,6 +72,21 @@ class ESolver_SDFT_PW : public ESolver_KS_PW<std::complex<double>>
     void check_che(const int nche_in);
 
     /**
+     * @brief calculate the response function Cmn(t) for currents
+     *
+     */
+    void jjcorr_cutks(const int ik,
+                   const int nt,
+                   const double dt,
+                   const double decut,
+                   ModuleBase::matrix& wg,
+                   hamilt::Velocity& velop,
+                   double* ct11,
+                   double* ct12,
+                   double* ct22,
+                   const int& cutib0);
+
+    /**
      * @brief Set the N order of Chebyshev expansion for conductivities
      *
      * @param dt t step
