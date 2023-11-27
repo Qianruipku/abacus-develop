@@ -334,10 +334,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
     ModuleBase::TITLE(this->classname, "sKG");
     ModuleBase::timer::tick(this->classname, "sKG");
     std::cout << "Calculating conductivity...." << std::endl;
-    if (nbatch > 1)
-    {
-        ModuleBase::WARNING_QUIT("ESolver_SDFT_PW", "nbatch > 1!");
-    }
+
     //------------------------------------------------------------------
     //                    Init
     //------------------------------------------------------------------
@@ -394,33 +391,27 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
     stoiter.stofunc.mu = mu;
     stoiter.stofunc.t = dt * nbatch;
     chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
-    std::complex<double>*batchcoef = nullptr, *batchmcoef = nullptr;
-    // if (nbatch > 1)
-    // {
-    //     batchcoef = new std::complex<double>[nche_KG * nbatch];
-    //     std::complex<double>* tmpcoef = batchcoef + (nbatch - 1) * nche_KG;
-    //     batchmcoef = new std::complex<double>[nche_KG * nbatch];
-    //     std::complex<double>* tmpmcoef = batchmcoef + (nbatch - 1) * nche_KG;
-    //     for (int i = 0; i < nche_KG; ++i)
-    //     {
-    //         tmpcoef[i] = chet.coef_complex[i];
-    //         tmpmcoef[i] = chemt.coef_complex[i];
-    //     }
-    //     for (int ib = 0; ib < nbatch - 1; ++ib)
-    //     {
-    //         tmpcoef = batchcoef + ib * nche_KG;
-    //         tmpmcoef = batchmcoef + ib * nche_KG;
-    //         stoiter.stofunc.t = 0.5 * dt * (ib + 1);
-    //         chet.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::nsin);
-    //         chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
-    //         for (int i = 0; i < nche_KG; ++i)
-    //         {
-    //             tmpcoef[i] = chet.coef_complex[i];
-    //             tmpmcoef[i] = chemt.coef_complex[i];
-    //         }
-    //     }
-    //     stoiter.stofunc.t = 0.5 * dt * nbatch;
-    // }
+    std::complex<double> *batchmcoef = nullptr;
+    if (nbatch > 1)
+    {
+        batchmcoef = new std::complex<double>[nche_KG * nbatch];
+        std::complex<double>* tmpmcoef = batchmcoef + (nbatch - 1) * nche_KG;
+        for (int i = 0; i < nche_KG; ++i)
+        {
+            tmpmcoef[i] = chemt.coef_complex[i];
+        }
+        for (int ib = 0; ib < nbatch - 1; ++ib)
+        {
+            tmpmcoef = batchmcoef + ib * nche_KG;
+            stoiter.stofunc.t = dt * (ib + 1);
+            chemt.calcoef_pair(&stoiter.stofunc, &Sto_Func<double>::ncos, &Sto_Func<double>::n_sin);
+            for (int i = 0; i < nche_KG; ++i)
+            {
+                tmpmcoef[i] = chemt.coef_complex[i];
+            }
+        }
+        stoiter.stofunc.t = dt * nbatch;
+    }
 
     // ik loop
     ModuleBase::timer::tick(this->classname, "kloop");
@@ -603,6 +594,22 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         tmpvchi.resize(1, perbands*3, npwx);
         tmphchi.resize(1, perbands, npwx);
         ModuleBase::Memory::record("SDFT::vchi", memory_cost*16);
+        psi::Psi<std::complex<double>> poly_sfright;
+        psi::Psi<std::complex<double>> poly_j1, poly_j2;
+        if (nbatch > 1)
+        {
+            poly_j1.resize(3*nche_KG, perbands, npwx);
+            ModuleBase::Memory::record("SDFT::poly_j1",
+                                       sizeof(std::complex<double>) * nche_KG * perbands * npwx);
+
+            poly_j2.resize(3*nche_KG, perbands, npwx);
+            ModuleBase::Memory::record("SDFT::poly_j2",
+                                       sizeof(std::complex<double>) * nche_KG * 3 * perbands * npwx);
+
+            poly_sfright.resize(nche_KG, perbands, npwx);
+            ModuleBase::Memory::record("SDFT::poly_sfright",
+                                       sizeof(std::complex<double>) * nche_KG * 3 * perbands * npwx);
+        }
         
         // J|sfileft>
         this->calj12(ik, perbands, sfleft, j1left, j2left, tmpvchi, tmphchi, velop);
@@ -686,29 +693,103 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
 
             ModuleBase::timer::tick(this->classname, "evolution");
             // Sto
-            // if (nbatch == 1)
-            // {
-            chemt.calfinalvec_complex(&stohchi,
-                                      &Stochastic_hchi::hchi_norm,
-                                      sfright.get_pointer(),
-                                      sfright.get_pointer(),
-                                      npw,
-                                      npwx,
-                                      perbands);
-            chemt.calfinalvec_complex(&stohchi,
-                                     &Stochastic_hchi::hchi_norm,
-                                     j1left.get_pointer(),
-                                     j1left.get_pointer(),
-                                     npw,
-                                     npwx,
-                                     perbands*3);
-            chemt.calfinalvec_complex(&stohchi,
-                                     &Stochastic_hchi::hchi_norm,
-                                     j2left.get_pointer(),
-                                     j2left.get_pointer(),
-                                     npw,
-                                     npwx,
-                                     perbands*3);
+            if (nbatch == 1)
+            {
+                chemt.calfinalvec_complex(&stohchi,
+                                          &Stochastic_hchi::hchi_norm,
+                                          sfright.get_pointer(),
+                                          sfright.get_pointer(),
+                                          npw,
+                                          npwx,
+                                          perbands);
+                chemt.calfinalvec_complex(&stohchi,
+                                         &Stochastic_hchi::hchi_norm,
+                                         j1left.get_pointer(),
+                                         j1left.get_pointer(),
+                                         npw,
+                                         npwx,
+                                         perbands*3);
+                chemt.calfinalvec_complex(&stohchi,
+                                         &Stochastic_hchi::hchi_norm,
+                                         j2left.get_pointer(),
+                                         j2left.get_pointer(),
+                                         npw,
+                                         npwx,
+                                         perbands*3);
+            }
+            else
+            {
+                if ((it - 1) % nbatch == 0)
+                {
+                    chemt.calpolyvec_complex(&stohchi,
+                                            &Stochastic_hchi::hchi_norm,
+                                            sfright.get_pointer(),
+                                            poly_sfright.get_pointer(),
+                                            npw,
+                                            npwx,
+                                            perbands);
+                    for(int id = 0 ; id < 3 ; ++id)
+                    {
+                        chemt.calpolyvec_complex(&stohchi,
+                                            &Stochastic_hchi::hchi_norm,
+                                            j1left.get_pointer() + id * perbands * npwx,
+                                            poly_j1.get_pointer() + id * nche_KG * perbands * npwx,
+                                            npw,
+                                            npwx,
+                                            perbands);
+                        chemt.calpolyvec_complex(&stohchi,
+                                            &Stochastic_hchi::hchi_norm,
+                                            j2left.get_pointer() + id * perbands * npwx,
+                                            poly_j2.get_pointer() + id * nche_KG * perbands * npwx,
+                                            npw,
+                                            npwx,
+                                            perbands);
+                    }
+                }
+
+                std::complex<double>* tmpmcoef = batchmcoef + (it - 1) % nbatch * nche_KG;
+                const char transa = 'N';
+                const int LDA = perbands * npwx;
+                const int M = perbands * npwx;
+                const int N = nche_KG;
+                const int inc = 1;
+                zgemv_(&transa,
+                       &M,
+                       &N,
+                       &ModuleBase::ONE,
+                       poly_sfright.get_pointer(),
+                       &LDA,
+                       tmpmcoef,
+                       &inc,
+                       &ModuleBase::ZERO,
+                       sfright.get_pointer(),
+                       &inc);
+                for(int id = 0 ; id < 3 ; ++id)
+                {
+                    zgemv_(&transa,
+                           &M,
+                           &N,
+                           &ModuleBase::ONE,
+                           poly_j1.get_pointer() + id * nche_KG * perbands * npwx,
+                           &LDA,
+                           tmpmcoef,
+                           &inc,
+                           &ModuleBase::ZERO,
+                           j1left.get_pointer() + id * perbands * npwx,
+                           &inc);
+                    zgemv_(&transa,
+                           &M,
+                           &N,
+                           &ModuleBase::ONE,
+                           poly_j2.get_pointer() + id * nche_KG * perbands * npwx,
+                           &LDA,
+                           tmpmcoef,
+                           &inc,
+                           &ModuleBase::ZERO,
+                           j2left.get_pointer() + id * perbands * npwx,
+                           &inc);
+                }
+            }
             this->calj12(ik, perbands, sfright, j1right, j2right, tmpvchi, tmphchi, velop);
             
             ////Im<left|right>=Re<left|-i|right>=Re<ileft|J|right>
@@ -787,56 +868,11 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                     / 2.0);
             }
             //-------- for filter --------
-            // }
-            
-            
-            
-            // else
-            // {
-            //     std::complex<double>* tmppolyexpmtsfchi = poly_expmtsfchi.get_pointer();
-            //     std::complex<double>* tmppolyexpmtsmfchi = poly_expmtsmfchi.get_pointer();
-            //     std::complex<double>* tmppolyexptsfchi = poly_exptsfchi.get_pointer();
-            //     std::complex<double>* tmppolyexptsmfchi = poly_exptsmfchi.get_pointer();
-            //     std::complex<double>* stoexpmtsfchi = expmtsfchi.get_pointer();
-            //     std::complex<double>* stoexpmtsmfchi = expmtsmfchi.get_pointer();
-            //     std::complex<double>* stoexptsfchi = exptsfchi.get_pointer();
-            //     std::complex<double>* stoexptsmfchi = exptsmfchi.get_pointer();
-            //     if ((it - 1) % nbatch == 0)
-            //     {
-            //         chet.calpolyvec_complex(&stohchi,
-            //                                 &Stochastic_hchi::hchi_norm,
-            //                                 stoexptsfchi,
-            //                                 tmppolyexptsfchi,
-            //                                 npw,
-            //                                 npwx,
-            //                                 perbands_sto);
-            //     }
-
-            //     std::complex<double>* tmpcoef = batchcoef + (it - 1) % nbatch * nche_KG;
-            //     std::complex<double>* tmpmcoef = batchmcoef + (it - 1) % nbatch * nche_KG;
-            //     const char transa = 'N';
-            //     const int LDA = perbands_sto * npwx;
-            //     const int M = perbands_sto * npwx;
-            //     const int N = nche_KG;
-            //     const int inc = 1;
-            //     zgemv_(&transa,
-            //            &M,
-            //            &N,
-            //            &ModuleBase::ONE,
-            //            tmppolyexptsfchi,
-            //            &LDA,
-            //            tmpcoef,
-            //            &inc,
-            //            &ModuleBase::ZERO,
-            //            stoexptsfchi,
-            //            &inc);
-            // }
             ModuleBase::timer::tick(this->classname, "evolution");
         }
         std::cout << std::endl;
     } // ik loop
     ModuleBase::timer::tick(this->classname, "kloop");
-    delete[] batchcoef;
     delete[] batchmcoef;
 
 #ifdef __MPI
