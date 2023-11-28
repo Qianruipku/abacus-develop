@@ -39,20 +39,20 @@ struct parallel_distribution
 };
 
 void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
-                                              const int nt,
-                                              const double dt,
-                                              const double decut,
-                                              ModuleBase::matrix& wg,
-                                              hamilt::Velocity& velop,
-                                              double* ct11,
-                                              double* ct12,
-                                              double* ct22,
-                                              const int& nband_cut)
+                                   const int nt,
+                                   const double dt,
+                                   const double decut,
+                                   const std::vector<double>& fd,
+                                   hamilt::Velocity& velop,
+                                   double* ct11,
+                                   double* ct12,
+                                   double* ct22,
+                                   const int& nband_cut)
 {
     if(nband_cut == 0)
         return;
     const int nbands = GlobalV::NBANDS;
-    if(wg(ik, 0) - wg(ik, nbands - 1) < 1e-8)
+    if(fd[0] - fd[nbands - 1] < 1e-5)
         return;
     char transn = 'N';
     char transc = 'C';
@@ -117,7 +117,7 @@ void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
         for (int ib = 0; ib < nband_cut; ++ib)
         {
             double ei = enb[ib];
-            double fi = wg(ik, ib);
+            double fi = fd[ib];
             for (int jb = 0; jb < nbands; ++jb)
             {
                 double ej = enb[jb];
@@ -125,7 +125,7 @@ void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
                 {
                     continue;
                 }
-                double fj = wg(ik, jb);
+                double fj = fd[jb];
                 double tmct = sin((ej - ei) * (it)*dt) * fi * (1 - fj) * pij2[ib*nbands + jb];
                 tmct11 += tmct;
                 tmct12 += -tmct * ((ei + ej) / 2 - ef);
@@ -139,7 +139,7 @@ void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
         for (int ib = nband_cut; ib < nbands; ++ib)
         {
             double ei = enb[ib];
-            double fi = wg(ik, ib);
+            double fi = fd[ib];
             for (int jb = 0; jb < ib; ++jb)
             {
                 double ej = enb[jb];
@@ -147,7 +147,7 @@ void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
                 {
                     continue;
                 }
-                double fj = wg(ik, jb);
+                double fj = fd[jb];
                 double tmct = sin((ej - ei) * (it)*dt) * fi * (1 - fj) * pij2[ib*nbands + jb];
                 tmct11 -= tmct;
                 tmct12 -= -tmct * ((ei + ej) / 2 - ef);
@@ -156,11 +156,11 @@ void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
         }
         //-------- for filter --------
 
-        ct11[it] += tmct11 / 2.0;
-        ct12[it] += tmct12 / 2.0;
-        ct22[it] += tmct22 / 2.0;
+        ct11[it] += tmct11 * kv.wk[ik] / 2.0;
+        ct12[it] += tmct12 * kv.wk[ik] / 2.0;
+        ct22[it] += tmct22 * kv.wk[ik] / 2.0;
     }
-        delete[] pij;
+    delete[] pij;
     delete[] prevc;
     delete[] pij2;
     return;
@@ -412,6 +412,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         }
         stoiter.stofunc.t = dt * nbatch;
     }
+    std::vector<double> fd_ks(GlobalV::NBANDS);
 
     // ik loop
     ModuleBase::timer::tick(this->classname, "kloop");
@@ -427,6 +428,10 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         }
         stoiter.stohchi.current_ik = ik;
         const int npw = kv.ngk[ik];
+        for(int ib = 0 ; ib < GlobalV::NBANDS; ++ib)
+        {
+            fd_ks[ib] = stoiter.stofunc.fd(this->pelec->ekb(ik, ib));
+        }
 
         // get allbands_ks
         int cutib0 = 0;
@@ -443,7 +448,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
             cutib0++;
             double Emin_KS = this->pelec->ekb(ik, cutib0);
             double dE = stoiter.stofunc.Emax - Emin_KS + wcut / ModuleBase::Ry_to_eV;
-            std::cout << "Emin_KS(" << cutib0 << "): " << Emin_KS * ModuleBase::Ry_to_eV
+            std::cout << "Emin_KS(" << cutib0+1 << "): " << Emin_KS * ModuleBase::Ry_to_eV
                       << " eV; Emax: " << stoiter.stofunc.Emax * ModuleBase::Ry_to_eV
                       << " eV; Recommended dt: " << 2 * M_PI / dE << " a.u." << std::endl;
         }
@@ -467,7 +472,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         //               ks conductivity
         //-----------------------------------------------------------
         if (GlobalV::MY_STOGROUP == 0 && GlobalV::NBANDS > 0)
-            jjcorr_cutks(ik, nt, dt, dEcut, this->pelec->wg, velop, ct11, ct12, ct22, cutib0);
+            jjcorr_cutks(ik, nt, dt, dEcut, fd_ks, velop, ct11, ct12, ct22, cutib0);
                 
         //-------- for filter --------
         psi::Psi<std::complex<double>> j1psi(1, cutib0*3, npwx, kv.ngk.data());
@@ -555,7 +560,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                        &ModuleBase::ONE,
                        &sfleft(perbands_ks, 0),
                        &npwx,
-                       j1psi.get_pointer(),
+                       &j1psi(id*cutib0,0),
                        &npwx,
                        &ModuleBase::ZERO,
                        j1mat,
@@ -568,14 +573,14 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                        &ModuleBase::ONE,
                        &sfleft(perbands_ks, 0),
                        &npwx,
-                       j2psi.get_pointer(),
+                       &j2psi(id*cutib0,0),
                        &npwx,
                        &ModuleBase::ZERO,
                        j2mat,
                        &perbands_sto);
                 for(int ib = 0; ib < cutib0; ++ib)
                 {
-                    double mfi =  1.0 - this->pelec->wg(ik, ib);
+                    double mfi =  1.0 - fd_ks[ib];
                     for(int jb = 0; jb < perbands_sto; ++jb)
                     {
                         j1mat[ib*perbands_sto + jb] *= mfi;
@@ -584,6 +589,10 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                 }
             }
         }
+#ifdef __MPI
+    MPI_Allreduce(MPI_IN_PLACE, j1l.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j2l.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+#endif
         //-------- for filter --------
 
         
@@ -643,29 +652,8 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                              j2left.get_pointer(),
                              npw,
                              npwx,
-                             perbands*3);
+                             perbands*3);       
         
-        //------------------------  allocate ------------------------
-        
-        // if (nbatch > 1)
-        // {
-        //     poly_exptsfchi.resize(nche_KG, perbands_sto, npwx);
-        //     ModuleBase::Memory::record("SDFT::poly_exptsfchi",
-        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
-
-        //     poly_exptsmfchi.resize(nche_KG, perbands_sto, npwx);
-        //     ModuleBase::Memory::record("SDFT::poly_exptsmfchi",
-        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
-
-        //     poly_expmtsfchi.resize(nche_KG, perbands_sto, npwx);
-        //     ModuleBase::Memory::record("SDFT::poly_expmtsfchi",
-        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
-
-        //     poly_expmtsmfchi.resize(nche_KG, perbands_sto, npwx);
-        //     ModuleBase::Memory::record("SDFT::poly_expmtsmfchi",
-        //                                sizeof(std::complex<double>) * nche_KG * perbands_sto * npwx);
-        // }
-
         //------------------------  t loop  --------------------------
         std::cout << "ik=" << ik << ": ";
         auto start = std::chrono::high_resolution_clock::now();
@@ -792,7 +780,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
             }
             this->calj12(ik, perbands, sfright, j1right, j2right, tmpvchi, tmphchi, velop);
             
-            ////Im<left|right>=Re<left|-i|right>=Re<ileft|J|right>
+            //Im<left|right>=Re<left|-i|right>=Re<ileft|J|right>
             for(int ib = 0 ; ib < perbands*3 ; ++ib)
             {
                 
@@ -824,7 +812,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                            &ModuleBase::ONE,
                            &sfright(perbands_ks, 0),
                            &npwx,
-                           j1psi.get_pointer(),
+                           &j1psi(id*cutib0,0),
                            &npwx,
                            &ModuleBase::ZERO,
                            j1mat,
@@ -837,7 +825,7 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                            &ModuleBase::ONE,
                            &sfright(perbands_ks, 0),
                            &npwx,
-                           j2psi.get_pointer(),
+                           &j2psi(id*cutib0,0),
                            &npwx,
                            &ModuleBase::ZERO,
                            j2mat,
@@ -853,19 +841,23 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                         }
                     }
                 }
+#ifdef __MPI
+    MPI_Allreduce(MPI_IN_PLACE, j1r.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j2r.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+#endif
+                
+                // Im(l_ij*r_ji) = Re(-il_ij * r_ji) = Re( ((-il)_ij)^* * r^+_ij)
                 int num_per = parajmat.num_per;
                 int st_per = parajmat.start;
-                ct11[it] -= static_cast<double>(
-                    ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j1r.data() + st_per, false) * kv.wk[ik]
-                    / 2.0);
-                double tmp12 = static_cast<double>(
-                    ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j2r.data() + st_per, false));
-                double tmp21 = static_cast<double>(
-                    ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j1r.data() + st_per, false));
+                ct11[it] -= ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j1r.data() + st_per, false)
+                            * kv.wk[ik] / 2.0;
+                double tmp12
+                    = ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j2r.data() + st_per, false);
+                double tmp21
+                    = ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j1r.data() + st_per, false);
                 ct12[it] += 0.5 * (tmp12 + tmp21) * kv.wk[ik] / 2.0;
-                ct22[it] -= static_cast<double>(
-                    ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j2r.data() + st_per, false) * kv.wk[ik]
-                    / 2.0);
+                ct22[it] -= ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j2r.data() + st_per, false)
+                            * kv.wk[ik] / 2.0;
             }
             //-------- for filter --------
             ModuleBase::timer::tick(this->classname, "evolution");

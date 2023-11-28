@@ -79,7 +79,7 @@ class ESolver_SDFT_PW : public ESolver_KS_PW<std::complex<double>>
                    const int nt,
                    const double dt,
                    const double decut,
-                   ModuleBase::matrix& wg,
+                   const std::vector<double>& fd,
                    hamilt::Velocity& velop,
                    double* ct11,
                    double* ct12,
