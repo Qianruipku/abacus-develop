@@ -37,6 +37,16 @@ struct parallel_distribution
     int start;
     int num_per;
 };
+void convert_psi(const psi::Psi<std::complex<double>>& psi_in, psi::Psi<std::complex<float>>& psi_out)
+{
+    psi_in.fix_k(0);
+    psi_out.fix_k(0);
+    for (int i = 0; i < psi_in.size(); ++i)
+    {
+        psi_out.get_pointer()[i] = static_cast<std::complex<float>>(psi_in.get_pointer()[i]);
+    }
+    return;
+}
 
 void ESolver_SDFT_PW::jjcorr_cutks(const int ik,
                                    const int nt,
@@ -477,22 +487,28 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         //-------- for filter --------
         psi::Psi<std::complex<double>> j1psi(1, cutib0*3, npwx, kv.ngk.data());
         psi::Psi<std::complex<double>> j2psi(1, cutib0*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<float>> f_j1psi(1, cutib0*3, npwx, kv.ngk.data());
+        psi::Psi<std::complex<float>> f_j2psi(1, cutib0*3, npwx, kv.ngk.data());
         psi::Psi<std::complex<double>> tmpvchi(1, cutib0*3, npwx, kv.ngk.data());
         psi::Psi<std::complex<double>> tmphchi(1, cutib0, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::Jpsi", cutib0 * npwx * sizeof(std::complex<double>)*6);
+        ModuleBase::Memory::record("SDFT::Jpsi", cutib0 * npwx * sizeof(std::complex<float>)*6);
         const int ndimj = cutib0*perbands_sto;
         parallel_distribution parajmat(3 * ndimj, GlobalV::NPROC_IN_POOL, GlobalV::RANK_IN_POOL);
-        std::vector<std::complex<double>> j1l(ndimj*3), j2l(ndimj*3);
-        ModuleBase::Memory::record("SDFT::j1l", sizeof(std::complex<double>) * ndimj*3);
-        ModuleBase::Memory::record("SDFT::j2l", sizeof(std::complex<double>) * ndimj*3);
-        std::vector<std::complex<double>> j1r(ndimj*3), j2r(ndimj*3);
-        ModuleBase::Memory::record("SDFT::j1r", sizeof(std::complex<double>) * ndimj*3);
-        ModuleBase::Memory::record("SDFT::j2r", sizeof(std::complex<double>) * ndimj*3);
+        std::vector<std::complex<float>> j1l(ndimj*3), j2l(ndimj*3);
+        ModuleBase::Memory::record("SDFT::j1l", sizeof(std::complex<float>) * ndimj*3);
+        ModuleBase::Memory::record("SDFT::j2l", sizeof(std::complex<float>) * ndimj*3);
+        std::vector<std::complex<float>> j1r(ndimj*3), j2r(ndimj*3);
+        ModuleBase::Memory::record("SDFT::j1r", sizeof(std::complex<float>) * ndimj*3);
+        ModuleBase::Memory::record("SDFT::j2r", sizeof(std::complex<float>) * ndimj*3);
 
         //J|psi>
         if(cutib0 > 0)
         {
             this->calj12(ik, cutib0, *psi, j1psi, j2psi, tmpvchi, tmphchi, velop);
+            convert_psi(j1psi, f_j1psi);
+            convert_psi(j2psi, f_j2psi);
+            j1psi.resize(1,0,1);
+            j2psi.resize(1,0,1);
         }
         //-------- for filter --------
 
@@ -502,7 +518,8 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         //-------------------     allocate  -------------------------
         size_t memory_cost = perbands * npwx * sizeof(std::complex<double>);
         psi::Psi<std::complex<double>> right(1, perbands, npwx, kv.ngk.data());
-        ModuleBase::Memory::record("SDFT::right", memory_cost);
+        psi::Psi<std::complex<float>> f_tmp(1, perbands, npwx, kv.ngk.data());
+        ModuleBase::Memory::record("SDFT::right", memory_cost*3/2);
         
         //prepare |right>
         for (int ib = 0; ib < perbands_ks; ++ib)
@@ -545,42 +562,46 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
         //-------- for filter --------
         if(cutib0 > 0)
         {
+            psi::Psi<std::complex<float>>& f_sfleft = f_tmp;
+            convert_psi(sfleft, f_sfleft);
+            char transa = 'C';
+            char transb = 'N';
+            const std::complex<float> one = 1.0f;
+            const std::complex<float> zero = 0.0f;
             for (int id = 0; id < 3; ++id)
             {
-                std::complex<double>* j1mat = &j1l[id * ndimj];
-                std::complex<double>* j2mat = &j2l[id * ndimj];
-                char transa = 'C';
-                char transb = 'N';
+                std::complex<float>* j1mat = &j1l[id * ndimj];
+                std::complex<float>* j2mat = &j2l[id * ndimj];
                 //<\chi|v|\psi>
-                zgemm_(&transa,
+                cgemm_(&transa,
                        &transb,
                        &perbands_sto,
                        &cutib0,
                        &npw,
-                       &ModuleBase::ONE,
-                       &sfleft(perbands_ks, 0),
+                       &one,
+                       &f_sfleft(perbands_ks, 0),
                        &npwx,
-                       &j1psi(id*cutib0,0),
+                       &f_j1psi(id*cutib0,0),
                        &npwx,
-                       &ModuleBase::ZERO,
+                       &zero,
                        j1mat,
                        &perbands_sto);
-                zgemm_(&transa,
+                cgemm_(&transa,
                        &transb,
                        &perbands_sto,
                        &cutib0,
                        &npw,
-                       &ModuleBase::ONE,
-                       &sfleft(perbands_ks, 0),
+                       &one,
+                       &f_sfleft(perbands_ks, 0),
                        &npwx,
-                       &j2psi(id*cutib0,0),
+                       &f_j2psi(id*cutib0,0),
                        &npwx,
-                       &ModuleBase::ZERO,
+                       &zero,
                        j2mat,
                        &perbands_sto);
                 for(int ib = 0; ib < cutib0; ++ib)
                 {
-                    double mfi =  1.0 - fd_ks[ib];
+                    float mfi =  1.0 - fd_ks[ib];
                     for(int jb = 0; jb < perbands_sto; ++jb)
                     {
                         j1mat[ib*perbands_sto + jb] *= mfi;
@@ -590,8 +611,8 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
             }
         }
 #ifdef __MPI
-    MPI_Allreduce(MPI_IN_PLACE, j1l.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, j2l.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j1l.data(), 3 * ndimj, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j2l.data(), 3 * ndimj, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
 #endif
         //-------- for filter --------
 
@@ -797,43 +818,48 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
             //-------- for filter --------
             if(cutib0 > 0)
             {
+                psi::Psi<std::complex<float>>& f_sfright = f_tmp;
+                convert_psi(sfright, f_sfright);
+                char transa = 'C';
+                char transb = 'N';
+                const std::complex<float> one = 1.0f;
+                const std::complex<float> zero = 0.0f;
                 for (int id = 0; id < 3; ++id)
                 {
-                    std::complex<double>* j1mat = &j1r[id * ndimj];
-                    std::complex<double>* j2mat = &j2r[id * ndimj];
-                    char transa = 'C';
-                    char transb = 'N';
+                    std::complex<float>* j1mat = &j1r[id * ndimj];
+                    std::complex<float>* j2mat = &j2r[id * ndimj];
                     //<\chi|v|\psi>
-                    zgemm_(&transa,
+                    cgemm_(&transa,
                            &transb,
                            &perbands_sto,
                            &cutib0,
                            &npw,
-                           &ModuleBase::ONE,
-                           &sfright(perbands_ks, 0),
+                           &one,
+                           &f_sfright(perbands_ks, 0),
                            &npwx,
-                           &j1psi(id*cutib0,0),
+                           &f_j1psi(id*cutib0,0),
                            &npwx,
-                           &ModuleBase::ZERO,
+                           &zero,
                            j1mat,
                            &perbands_sto);
-                    zgemm_(&transa,
+                    cgemm_(&transa,
                            &transb,
                            &perbands_sto,
                            &cutib0,
                            &npw,
-                           &ModuleBase::ONE,
-                           &sfright(perbands_ks, 0),
+                           &one,
+                           &f_sfright(perbands_ks, 0),
                            &npwx,
-                           &j2psi(id*cutib0,0),
+                           &f_j2psi(id*cutib0,0),
                            &npwx,
-                           &ModuleBase::ZERO,
+                           &zero,
                            j2mat,
                            &perbands_sto);
                     double t = it * dt;
                     for(int ib = 0; ib < cutib0; ++ib)
                     {
-                        std::complex<double> expi =  exp( ModuleBase::NEG_IMAG_UNIT * this->pelec->ekb(ik, ib) * t);
+                        float phi = this->pelec->ekb(ik, ib) * t;
+                        std::complex<float> expi =  exp( std::complex<float>(0.0f, -1.0f) * phi );
                         for(int jb = 0; jb < perbands_sto; ++jb)
                         {
                             j1mat[ib*perbands_sto + jb] *= expi;
@@ -842,22 +868,24 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
                     }
                 }
 #ifdef __MPI
-    MPI_Allreduce(MPI_IN_PLACE, j1r.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, j2r.data(), 3 * ndimj, MPI_DOUBLE_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j1r.data(), 3 * ndimj, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, j2r.data(), 3 * ndimj, MPI_COMPLEX, MPI_SUM, POOL_WORLD);
 #endif
                 
                 // Im(l_ij*r_ji) = Re(-il_ij * r_ji) = Re( ((-il)_ij)^* * r^+_ij)
                 int num_per = parajmat.num_per;
                 int st_per = parajmat.start;
-                ct11[it] -= ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j1r.data() + st_per, false)
-                            * kv.wk[ik] / 2.0;
-                double tmp12
-                    = ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j2r.data() + st_per, false);
-                double tmp21
-                    = ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j1r.data() + st_per, false);
+                ct11[it] -= static_cast<double>(
+                    ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j1r.data() + st_per, false)
+                    * kv.wk[ik] / 2.0);
+                double tmp12 = static_cast<double>(
+                    ModuleBase::GlobalFunc::ddot_real(num_per, j1l.data() + st_per, j2r.data() + st_per, false));
+                double tmp21 = static_cast<double>(
+                    ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j1r.data() + st_per, false));
                 ct12[it] += 0.5 * (tmp12 + tmp21) * kv.wk[ik] / 2.0;
-                ct22[it] -= ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j2r.data() + st_per, false)
-                            * kv.wk[ik] / 2.0;
+                ct22[it] -= static_cast<double>(
+                    ModuleBase::GlobalFunc::ddot_real(num_per, j2l.data() + st_per, j2r.data() + st_per, false)
+                    * kv.wk[ik] / 2.0);
             }
             //-------- for filter --------
             ModuleBase::timer::tick(this->classname, "evolution");
