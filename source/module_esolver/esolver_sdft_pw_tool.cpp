@@ -445,18 +445,18 @@ void ESolver_SDFT_PW::sKG(const int nche_KG,
 
         // get allbands_ks
         int cutib0 = 0;
-        if (GlobalV::NBANDS > 1)
+        if (GlobalV::NBANDS > 0)
         {
-            double Emax_KS = this->pelec->ekb(ik, GlobalV::NBANDS - 1);
-            for (cutib0 = GlobalV::NBANDS - 2; cutib0 >= 0; --cutib0)
+            double Emax_KS = std::max(stoiter.stofunc.Emin, this->pelec->ekb(ik, GlobalV::NBANDS - 1));
+            for (cutib0 = GlobalV::NBANDS - 1; cutib0 >= 0; --cutib0)
             {
-                                if (Emax_KS - this->pelec->ekb(ik, cutib0) > dEcut)
+                if (Emax_KS - this->pelec->ekb(ik, cutib0) > dEcut)
                 {
                     break;
                 }
             }
-            cutib0++;
-            double Emin_KS = this->pelec->ekb(ik, cutib0);
+            ++cutib0;
+            double Emin_KS = (cutib0 < GlobalV::NBANDS) ? this->pelec->ekb(ik, cutib0) : stoiter.stofunc.Emin;
             double dE = stoiter.stofunc.Emax - Emin_KS + wcut / ModuleBase::Ry_to_eV;
             std::cout << "Emin_KS(" << cutib0+1 << "): " << Emin_KS * ModuleBase::Ry_to_eV
                       << " eV; Emax: " << stoiter.stofunc.Emax * ModuleBase::Ry_to_eV
