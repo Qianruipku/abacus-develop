@@ -72,7 +72,6 @@ void Velocity::init(const int ik_in, bool init_float)
             // init f_gradvkb
             delete[] f_gradvkb;
             f_gradvkb = new std::complex<float>[npw * nkb3];
-            std::cout<<this->ppcell->gradvkb.ptr<<" "<<f_gradvkb<<std::endl;
             for (int ib = 0; ib < nkb3; ++ib)
             {
                 for (int ig = 0; ig < npw; ++ig)
