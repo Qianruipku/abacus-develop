@@ -314,7 +314,6 @@ int ESolver_SDFT_PW::set_cond_nche(const double dt, int& nbatch, const double co
             if(error < cond_thr)
             {
                 nche = i + 1;
-                nche = std::max(nche, nche_min);
                 break;
             }
         }
@@ -325,12 +324,12 @@ int ESolver_SDFT_PW::set_cond_nche(const double dt, int& nbatch, const double co
     int nche_new = 0;
 loop:
     // re-set Emin & Emax both in stohchi & stofunc
-    check_che(nche_old + 20);
+    check_che(std::max(nche_old * 2, nche_min));
 
     // second try to find nche with new Emin & Emax
     getnche(nche_new);
     
-    if(nche_new > nche_old + 20)
+    if(nche_new > nche_old * 2)
     {
         nche_old = nche_new;
         goto loop;
