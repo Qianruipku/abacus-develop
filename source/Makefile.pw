@@ -8,13 +8,6 @@ INCLUDES = -I. -Icommands -I../ -Imodule_base/module_container
 
 LIBS = -lm -lpthread
 OPTS = -std=c++14 -pedantic -m64 ${INCLUDES}
-HONG = -D__LCAO
-HONG += -D__ELPA
-ifeq ($(OPENMP), ON)
-    ELPA_NAME = elpa_openmp
-else
-    ELPA_NAME = elpa
-endif
 OBJ_DIR = obj
 BIN_DIR = ../bin
 SOURCE_DIR = .
@@ -58,12 +51,6 @@ ifeq ($(INTEL), ON)
 	       -lmkl_intel_thread -lmkl_core -lmkl_scalapack_lp64 -lmkl_blacs_intelmpi_lp64 -Wl,--end-group -Wl,-rpath=${MKLROOT}/lib/intel64
     INCLUDES += -I${MKLROOT}/include/fftw
 
-    #==========================
-    # ELPA package
-    #==========================
-    ELPA_LIB_DIR = ${ELPA_DIR}/lib
-    LIBS     += -L${ELPA_LIB_DIR} -l${ELPA_NAME}  -Wl,-rpath=${ELPA_LIB_DIR}
-    INCLUDES += -I${ELPA_INCLUDE_DIR}
 else
     OPTS += -fpermissive
     ifeq ($(OPENMP), ON)
@@ -79,11 +66,10 @@ else
     INCLUDES += -I${FFTW_INCLUDE_DIR}
     
     #==========================
-    # OPENBLAS, SCALAPACK, ELPA
+    # OPENBLAS, SCALAPACK
     #==========================
-    LIBS     += -L${OPENBLAS_LIB_DIR} -L${SCALAPACK_LIB_DIR} -L${ELPA_DIR}/lib -l${ELPA_NAME} -lscalapack -lopenblas -lgfortran\
-                -Wl,-rpath=${ELPA_DIR}/lib -Wl,-rpath=${SCALAPACK_LIB_DIR} -Wl,-rpath=${OPENBLAS_LIB_DIR}
-    INCLUDES += -I${ELPA_INCLUDE_DIR}
+    LIBS     += -L${OPENBLAS_LIB_DIR} -L${SCALAPACK_LIB_DIR} -lscalapack -lopenblas -lgfortran\
+                -Wl,-rpath=${SCALAPACK_LIB_DIR} -Wl,-rpath=${OPENBLAS_LIB_DIR}
 endif
 
 
@@ -169,7 +155,7 @@ ifdef DeePMD_DIR
     INCLUDES += -I${TensorFlow_INCLUDE_DIR}
 endif
 
-include Makefile.Objects
+include Makefile.Objects.pw
 
 #==========================
 # Optional HONG
